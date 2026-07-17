@@ -16,6 +16,9 @@ class FakeRuntime:
         path = output_root / contracts["task"]["task"]["id"]
         path.mkdir(parents=True)
         (path / "run.json").write_text("{}")
+        (path / "verification-summary.json").write_text(
+            json.dumps({"schema_version": 1, "verification": {"status": "passed"}})
+        )
         return path
 
 
@@ -96,8 +99,12 @@ class OrchestratorTests(unittest.TestCase):
             events = json.loads(
                 urlopen(base + f"/runs/{response['run_id']}/events").read()
             )
+            summary = json.loads(
+                urlopen(base + f"/runs/{response['run_id']}/summary").read()
+            )
             self.assertEqual("succeeded", run["status"])
             self.assertEqual(3, len(events))
+            self.assertEqual("passed", summary["verification"]["status"])
             httpd.shutdown()
             httpd.server_close()
             thread.join()

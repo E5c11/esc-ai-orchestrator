@@ -57,5 +57,17 @@ class Store:
         rows = self.connection.execute("SELECT sequence,type,payload,created_at FROM events WHERE run_id=? ORDER BY sequence", (run_id,)).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
 
+    def summary(self, run_id: str) -> dict[str, Any] | None:
+        run = self.get_run(run_id)
+        if not run or not run["output_path"]:
+            return None
+        path = Path(run["output_path"]) / "verification-summary.json"
+        if not path.is_file():
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError(f"{path} must contain a JSON object")
+        return value
+
     def contracts(self, task_id: str) -> dict[str, Any]:
         return json.loads(self.connection.execute("SELECT contracts FROM tasks WHERE id=?", (task_id,)).fetchone()[0])

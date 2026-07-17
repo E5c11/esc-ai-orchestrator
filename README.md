@@ -34,6 +34,8 @@ Endpoints:
 - `GET /tasks/{id}`
 - `GET /runs/{id}`
 - `GET /runs/{id}/events`
+- `GET /runs/{id}/summary` — return the bounded `verification-summary.json` when the
+  runtime produced one; complete reports remain in the run output directory
 
 Local state lives under `.orchestrator/` and is not committed.
 
