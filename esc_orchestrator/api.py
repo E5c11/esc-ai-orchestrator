@@ -16,6 +16,8 @@ def server(scheduler, store, host: str, port: int):
             elif len(parts) == 2 and parts[0] == "runs": value = store.get_run(parts[1])
             elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "events": value = store.events(parts[1])
             elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "summary": value = store.summary(parts[1])
+            elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "context": value = store.output_document(parts[1], "task-context.json")
+            elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "verification-plan": value = store.output_document(parts[1], "verification-plan.json")
             else: return self.send(404, {"error": "not found"})
             return self.send(200 if value else 404, value or {"error": "not found"})
         def do_POST(self):

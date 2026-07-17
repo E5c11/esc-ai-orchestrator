@@ -58,10 +58,13 @@ class Store:
         return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
 
     def summary(self, run_id: str) -> dict[str, Any] | None:
+        return self.output_document(run_id, "verification-summary.json")
+
+    def output_document(self, run_id: str, filename: str) -> dict[str, Any] | None:
         run = self.get_run(run_id)
         if not run or not run["output_path"]:
             return None
-        path = Path(run["output_path"]) / "verification-summary.json"
+        path = Path(run["output_path"]) / filename
         if not path.is_file():
             return None
         value = json.loads(path.read_text(encoding="utf-8"))

@@ -36,6 +36,8 @@ Endpoints:
 - `GET /runs/{id}/events`
 - `GET /runs/{id}/summary` — return the bounded `verification-summary.json` when the
   runtime produced one; complete reports remain in the run output directory
+- `GET /runs/{id}/context` — return the generated bounded task-routing context
+- `GET /runs/{id}/verification-plan` — return the ordered progressive verification gates
 
 Local state lives under `.orchestrator/` and is not committed.
 
