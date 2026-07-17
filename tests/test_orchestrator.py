@@ -24,6 +24,11 @@ class FakeRuntime:
         return path
 
 
+class FailingRuntime:
+    def execute(self, contracts, output_root):
+        raise RuntimeError("provider unavailable")
+
+
 def contracts():
     return {
         "task": {
@@ -65,6 +70,20 @@ def contracts():
 
 
 class OrchestratorTests(unittest.TestCase):
+    def test_failed_run_retains_checkpoint_candidate(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            scheduler = Scheduler(store, FailingRuntime(), root / "runs")
+            _, run_id = scheduler.submit(contracts())
+            scheduler.queue.join()
+            run = store.get_run(run_id)
+            checkpoint = store.output_yaml(run_id, "checkpoint.yaml")
+            self.assertEqual("failed", run["status"])
+            self.assertEqual("blocked", checkpoint["checkpoint"]["status"])
+            self.assertEqual(["provider unavailable"], checkpoint["progress"]["blockers"])
+            scheduler.close()
+
     def test_scheduler_persists_lifecycle_and_events(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)

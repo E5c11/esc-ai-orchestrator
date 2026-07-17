@@ -38,6 +38,11 @@ Endpoints:
   runtime produced one; complete reports remain in the run output directory
 - `GET /runs/{id}/context` — return the generated bounded task-routing context
 - `GET /runs/{id}/verification-plan` — return the ordered progressive verification gates
+- `GET /runs/{id}/checkpoint` — return a checkpoint candidate retained after a failed run
+
+Failure candidates remain transient until reviewed. Promote durable handoff state into
+the consuming repository with `esc-exec checkpoint create` or `checkpoint update`, then
+commit `workflows/active/<task-id>/checkpoint.yaml`.
 
 Local state lives under `.orchestrator/` and is not committed.
 

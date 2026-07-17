@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Protocol, Any
 
 from esc_orchestrator.store import Store
+from esc_exec.checkpoints import checkpoint_document
+from esc_exec.yaml_io import write_yaml
 
 
 class Runtime(Protocol):
@@ -34,7 +36,23 @@ class Scheduler:
                 output = self.runtime.execute(self.store.contracts(task_id), self.output_root)
                 self.store.update_run(run_id, "succeeded", str(output))
             except Exception as exc:
-                self.store.update_run(run_id, "failed", error=str(exc)[:1000])
+                error = str(exc)[:1000]
+                output_path = None
+                try:
+                    candidate_dir = self.output_root / run_id
+                    document = checkpoint_document(
+                        self.store.contracts(task_id)["task"],
+                        run_id=run_id,
+                        status="blocked",
+                        remaining=["Resolve the recorded blocker and resume the task."],
+                        blockers=[error],
+                        last_event_sequence=len(self.store.events(run_id)) - 1,
+                    )
+                    write_yaml(candidate_dir / "checkpoint.yaml", document)
+                    output_path = str(candidate_dir)
+                except Exception:
+                    pass
+                self.store.update_run(run_id, "failed", output_path=output_path, error=error)
             finally:
                 self.queue.task_done()
 

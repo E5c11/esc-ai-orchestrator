@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from esc_exec.yaml_io import load_yaml
 
 
 def now() -> str:
@@ -71,6 +72,13 @@ class Store:
         if not isinstance(value, dict):
             raise ValueError(f"{path} must contain a JSON object")
         return value
+
+    def output_yaml(self, run_id: str, filename: str) -> dict[str, Any] | None:
+        run = self.get_run(run_id)
+        if not run or not run["output_path"]:
+            return None
+        path = Path(run["output_path"]) / filename
+        return load_yaml(path) if path.is_file() else None
 
     def contracts(self, task_id: str) -> dict[str, Any]:
         return json.loads(self.connection.execute("SELECT contracts FROM tasks WHERE id=?", (task_id,)).fetchone()[0])
