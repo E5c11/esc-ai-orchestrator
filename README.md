@@ -48,6 +48,12 @@ commit `workflows/active/<task-id>/checkpoint.yaml`.
 
 Local state lives under `.orchestrator/` and is not committed.
 
+## Cohesive system roadmap
+
+The next development phase composes the architecture framework, execution framework,
+and orchestrator into unified repository onboarding and cross-repository planning. See
+[`plan/cohesive-system-integration-and-onboarding.md`](plan/cohesive-system-integration-and-onboarding.md).
+
 ## Test
 
 ```bash
