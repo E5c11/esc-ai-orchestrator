@@ -6,6 +6,33 @@
 orchestrator into one coherent product flow for repository onboarding, planning,
 execution, verification, and resumption.
 
+## Settled product identity
+
+The user-facing product is **Escape AI**. The name combines the creator's `Esc`
+initials with the product's purpose: escaping the mainstream pattern of unchecked AI
+autonomy by making AI reasoning architecture-aware, human-guided, observable, bounded,
+and resumable.
+
+**Positioning:**
+
+> **Escape AI — AI autonomy within boundaries you control.**
+
+Naming conventions are locked as follows:
+
+| Surface | Canonical name |
+|---|---|
+| Product and interface title | `Escape AI` |
+| User-facing CLI command | `escape-ai` |
+| Internal technical namespace | `esc-ai` |
+| Machine configuration directory | `~/.config/esc-ai/` |
+| Architecture repository/ID | `esc-ai-architecture-framework` |
+| Execution repository/ID | `esc-ai-execution-framework` |
+| Orchestrator repository/ID | `esc-ai-orchestrator` |
+
+Existing schema IDs, configuration paths, package namespaces, and repository names
+retain `esc-ai` for technical stability. Users interact with Escape AI; Escape AI uses
+the orchestrator; the orchestrator composes the frameworks and AI providers.
+
 ## Executive summary
 
 The envisioned flow is correct:
@@ -37,9 +64,10 @@ is the running control plane.
 | Execution framework | `esc-ai-execution-framework` | Manifests, indexes, execution contracts, profiles, verification, reports, checkpoints, dependency impact, adapters, and efficiency measurement |
 | Orchestrator | `esc-ai-orchestrator` | Unified CLI/API/UI, repository catalog, onboarding state machine, human approvals, planning, scheduling, credentials, workspaces, observation, and cross-repository coordination |
 
-The current `esc-ai-framework` repository should be renamed to
-`esc-ai-architecture-framework`. The old ID should produce a migration diagnostic,
-not remain a permanent second identity.
+The GitHub repository has been renamed and cloned locally as
+`esc-ai-architecture-framework`. Internal titles and consuming references still need
+migration. The old ID should produce a migration diagnostic, not remain a permanent
+second identity.
 
 Consuming repositories remain authoritative for project-specific facts, active
 workflows, exceptions, and internal architecture extensions such as
@@ -48,7 +76,7 @@ workflows, exceptions, and internal architecture extensions such as
 ## Composition model
 
 ```text
-esc-ai (CLI/UI owned by orchestrator)
+Escape AI (`escape-ai` CLI/UI owned by orchestrator)
   |
   +-- machine-local catalog
   |     +-- architecture framework route
@@ -135,12 +163,12 @@ arbitrary parent directories for repositories.
 
 ## Unified CLI and interface
 
-The orchestrator should own a single command named `esc-ai`. Interactive mode is the
+The orchestrator should own a single command named `escape-ai`. Interactive mode is the
 default for humans; equivalent non-interactive subcommands are mandatory for CI,
 scripts, and AI tools.
 
 ```text
-$ esc-ai
+$ escape-ai
 
 What would you like to do?
   1. Onboard a repository
@@ -278,7 +306,7 @@ without explicit instruction.
 After onboarding:
 
 ```text
-$ esc-ai
+$ escape-ai
   Plan new work
 
 Work type: feature | fix | refactor | maintenance | investigation
@@ -346,7 +374,7 @@ For an approved task, the orchestrator should:
 9. Promote reviewed durable state into the repository workflow.
 10. Record efficiency metrics and support comparable cohort analysis.
 
-Starting `esc-ai` later should show active tasks and checkpoints across registered
+Starting `escape-ai` later should show active tasks and checkpoints across registered
 repositories, allowing the user to resume without reconstructing context.
 
 ## API/state-machine boundaries
@@ -375,7 +403,7 @@ with unchanged inputs must be safe and byte-identical.
 
 ### Phase 0 — Naming and ownership contracts
 
-- Rename `esc-ai-framework` to `esc-ai-architecture-framework` locally and remotely.
+- Treat the GitHub and local checkout rename as complete.
 - Update titles, package/repository metadata, route IDs, links, schema IDs where
   appropriate, and consuming references.
 - Publish the three-product ownership matrix and conflict precedence.
@@ -414,7 +442,7 @@ load without hard-coded checkout paths.
 - Persist onboarding state and input digests in the orchestrator.
 - Separate read-only proposal from approved repository writes.
 
-**Exit:** `esc-ai repository analyze /path` produces a complete proposal without
+**Exit:** `escape-ai repository analyze /path` produces a complete proposal without
 modifying the repository.
 
 ### Phase 4 — Human-assisted manifest/profile construction
@@ -441,7 +469,7 @@ existing repository receives a reviewed migration diff.
 
 ### Phase 6 — Interactive CLI onboarding wizard
 
-- Add `esc-ai` top-level interactive menu.
+- Add the `escape-ai` top-level interactive menu and Escape AI product branding.
 - Render onboarding state-machine questions and proposals.
 - Add non-interactive equivalents: `repository add`, `analyze`, `answer`, `apply`,
   `validate`, and `status`.
@@ -496,20 +524,18 @@ CLI/API.
 
 ## Decisions required before implementation
 
-1. Confirm the architecture repository and remote rename.
-2. Confirm `esc-ai` as the unified command name.
-3. Decide whether `system.yaml` replaces or wraps the existing route registry.
-4. Decide how framework schema compatibility is expressed: exact version, compatible
+1. Decide whether `system.yaml` replaces or wraps the existing route registry.
+2. Decide how framework schema compatibility is expressed: exact version, compatible
    major version, or capability negotiation.
-5. Decide whether `context/project-profile.yaml` is migrated immediately or supported
+3. Decide whether `context/project-profile.yaml` is migrated immediately or supported
    through a deprecation window.
-6. Define which repository-specific instruction fields are structured versus free-form
+4. Define which repository-specific instruction fields are structured versus free-form
    Markdown.
-7. Define the canonical initiative/task ID strategy across repositories.
-8. Decide whether workflow writes are applied directly after approval or first emitted
+5. Define the canonical initiative/task ID strategy across repositories.
+6. Decide whether workflow writes are applied directly after approval or first emitted
    as a patch bundle.
-9. Select the second, smaller repository for clean onboarding validation.
-10. Configure a working runtime provider before measuring real end-to-end efficiency.
+7. Select the second, smaller repository for clean onboarding validation.
+8. Configure a working runtime provider before measuring real end-to-end efficiency.
 
 ## Non-goals and safeguards
 
@@ -528,7 +554,7 @@ CLI/API.
 
 Start with **Phase 0 and Phase 1 together as a bounded design/migration slice**:
 
-1. Rename the architecture framework.
+1. Complete the architecture framework's internal title and reference migration.
 2. Define the framework descriptor and shared manifest extensions.
 3. Implement composed framework resolution for one read-only task.
 4. Migrate `ampm-backend` references and validate all three repositories.
