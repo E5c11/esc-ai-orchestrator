@@ -626,13 +626,17 @@ unified `escape-ai` CLI itself is still Phase 6.
 - Import existing `context/project-profile.yaml` and framework references.
 - Generate/complete verification, report, and architecture profile flows.
 - Detect unresolved architecture stubs through the Gap Protocol.
-- Define component manifest templates: architecture-framework-owned template content
-  (schema, and one template per common archetype) carrying pre-filled
-  `architecture.profile_ids` and ownership/routing scaffolding, plus a `signals` block
-  describing what detected facts make it a match. The execution framework's onboarding
-  engine scores templates against Phase 3's detected signals and recommends a
-  best-fit template — accept it, pick another, or build a manifest from scratch. A
-  poor match across every template feeds the Who this is for readiness judgment.
+- Recommend `architecture.profile_ids`, not a template library: extend the
+  architecture framework's existing `PROFILE_DOC_MAP`-style signal-to-doc-ID mapping
+  (`tools/lookup.py`) — already proven, already maintained — to also emit a
+  suggested `profile_ids` list from Phase 3's detected signals, instead of building a
+  separate template content type, schema, and matching engine. A poor/empty
+  suggestion feeds the Who this is for readiness judgment.
+- For a brand-new project (no detected signals to match against), reuse the planning
+  conversation mechanism (see Planning conversation) rather than a separate flow:
+  describe the project, get curated profile options from the existing
+  platform/architecture/frameworks enums, confirm, and let the same signal-to-doc-ID
+  mapping resolve `profile_ids` from there.
 
 **Exit:** an incomplete proposal can resume after user input and reach valid shared
 manifests/profiles.
@@ -764,13 +768,13 @@ Next: **Phase 4 — Human-assisted manifest/profile construction**.
 3. Import existing `context/project-profile.yaml` and framework references.
 4. Generate/complete verification, report, and architecture profile flows.
 5. Detect unresolved architecture stubs through the Gap Protocol.
-6. Component manifest templates: architecture-framework-owned template content
-   (pre-filled `architecture.profile_ids`, ownership/routing scaffolding) matched
-   against Phase 3's detected signals to recommend a best-fit template — turning "which
-   of 90+ architecture-framework docs apply to your component" into "here's our
-   recommendation, accept it, pick another, or build your own." A poor match across
-   all templates is an additional signal for the Who this is for readiness judgment,
-   not a separate mechanism.
+6. Recommend `architecture.profile_ids` by extending the existing `PROFILE_DOC_MAP`
+   signal-to-doc-ID mapping (`tools/lookup.py`) rather than building a separate
+   template content type/schema/matching engine — turning "which of 90+
+   architecture-framework docs apply to your component" into "here's our
+   recommendation, accept it, or adjust it." A poor/empty suggestion feeds the Who
+   this is for readiness judgment. New projects with no detected signals reuse the
+   planning conversation mechanism instead of a separate flow.
 
 Do not begin the interactive wizard before this composition protocol is stable. The
 wizard would otherwise encode temporary naming, manifest, and instruction assumptions
