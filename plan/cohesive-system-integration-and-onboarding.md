@@ -839,13 +839,40 @@ unverified.
 ### Phase 10 — Migration and evidence
 
 - Pilot full onboarding against `ampm-backend` without destroying its mature workflow
-  history.
-- Pilot a smaller new repository to prove clean bootstrap behavior.
+  history. **Done** — re-migrated by hand to the `.esc-ai/`-consolidated layout (23
+  old-location tracked files removed, all 9 components' human-authored purposes
+  recovered from git history and preserved); `repository validate` all-VALID;
+  uncommitted, sitting as a reviewable diff.
+- Pilot a smaller new repository to prove clean bootstrap behavior. **Done** —
+  `/home/emmanuel/StudioProjects/CatchMeIfYouCan` (fresh KMP Android app, 6 Gradle
+  modules, no prior Escape AI adoption). `repository analyze` → `answer` (12 semantic
+  questions answered from the repo's own README/module map/`build.gradle.kts`, not
+  fabricated) → `apply` produced a clean, fully valid manifest set on the first pass;
+  `repository validate` all-VALID. Uncommitted, sitting as a reviewable diff.
+  - Evidence found and fixed: this repo builds exclusively with Gradle's type-safe
+    project accessors (`implementation(projects.core.common)`, enabled via
+    `enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")`), which
+    `esc_exec/dependencies.py`'s `PROJECT_DEPENDENCY` regex — written against
+    `ampm-backend`'s string-literal `project(":x")` style — didn't recognize at all,
+    silently producing a 0-edge dependency graph despite 11 real inter-module
+    dependencies. Fixed by adding `TYPESAFE_PROJECT_DEPENDENCY` plus
+    `_project_path_to_accessor`, which reproduces Gradle's own segment-to-camelCase
+    accessor naming from each component's already-known declared project path (no
+    guessing from the accessor text alone, which would be ambiguous). Verified against
+    the real repo (all 11 edges now present, matching the module map) and by new
+    regression tests in `test_dependencies.py`. This is exactly the kind of
+    evidence-driven refinement this phase exists to surface — a second real repository
+    with a different but common Gradle convention exposed a gap the first pilot
+    couldn't.
 - Pilot one linked multi-repository feature.
 - Compare context/tool/token/rework metrics against representative prior workflows.
+  Blocked — needs a working AI provider connection with frictionless subscription-based
+  execution, which no current adapter provides (see `native-cli-provider-adapters.md`).
 - Refine prompts and defaults only from observed evidence.
 
 **Exit:** the cohesive flow is validated on existing, new, and cross-repository cases.
+Existing- and new-repository cases done; cross-repository case and efficiency
+comparison remain.
 
 ## Decisions required before implementation
 
