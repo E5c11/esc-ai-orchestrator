@@ -53,6 +53,29 @@ the architecture-framework rename, a shared manifest model, an idempotent onboar
 state machine, human interview flows, instruction inheritance, and multi-repository
 workflow planning.
 
+## Who this is for
+
+Escape AI's onboarding flow targets **new repositories, and repositories that already
+substantially follow this system's manifest/index conventions.** It is not a tool for
+reconciling a repository with extensive undocumented legacy structure, an
+unsupported build system, or heavy pre-existing conventions that conflict with its
+own. That is a distinct, harder problem this plan does not attempt to solve.
+
+This is a deliberate scope boundary, not an accidental limitation. A repository that
+needs manual scoping before it can be onboarded is a real, common case; the honest
+response is for the system to detect that and say so, not to attempt reconciliation
+and quietly produce a worse result than a human would have. The onboarding analysis
+engine (Phase 3) already classifies every manifest as create/update/preserve and
+surfaces conflicts and semantic questions — that classification is the mechanism for
+detecting fit, not just a bookkeeping step. A proposal dominated by `update`/conflict
+entries rather than clean `create`/`preserve` ones is the system's own signal that a
+repository is a poor fit for automated onboarding.
+
+Phase 10's `ampm-backend` pilot validates onboarding against a repository that is a
+*good fit* by this definition — new or already largely compliant — not a demonstration
+that this system handles arbitrary messy legacy code. It was never meant to prove that,
+and claiming otherwise would be dishonest about what got tested.
+
 ## Canonical system names and responsibilities
 
 The system consists of three cooperating products. Only two are frameworks; the third
@@ -569,16 +592,32 @@ architecture documents, and run artifacts resolve to `<repository>/.esc-ai/runs/
 
 **Exit:** one catalog resolves all three products and every registered repository.
 
-### Phase 3 — Onboarding analysis engine
+### Phase 3 — Onboarding analysis engine — **Complete**
 
-- Generalize build-system adapter interfaces.
-- Implement idempotent repository analysis and proposal contracts.
-- Detect existing profiles, instructions, workflow packages, and conflicts.
-- Persist onboarding state and input digests in the orchestrator.
-- Separate read-only proposal from approved repository writes.
+- Generalize build-system adapter interfaces. **Done** — `BuildSystemAdapter` protocol
+  and dispatch in the execution framework; one concrete adapter (Gradle) today,
+  extensible without changing calling code.
+- Implement idempotent repository analysis and proposal contracts. **Done** —
+  `analyze_repository` classifies each manifest as create/update/preserve/deprecate
+  with evidence and computes a stable input digest; a new `onboarding-proposal`
+  contract kind carries the result.
+- Detect existing profiles, instructions, workflow packages, and conflicts. **Done**
+  for presence detection (`INSTRUCTIONS.md`, `.esc-ai/workflows/`,
+  `context/project-profile.yaml`) and manifest drift; deeper conflict reconciliation
+  is bounded by this system's declared scope (see the new "Who this is for" section) —
+  it detects and reports drift, it does not attempt to resolve arbitrary pre-existing
+  conventions.
+- Persist onboarding state and input digests in the orchestrator. **Done** — a new
+  `onboarding_proposals` table plus `POST /repositories/{id}/analyze` and
+  `GET /repositories/{id}/proposal`.
+- Separate read-only proposal from approved repository writes. **Done** — verified
+  both in tests (file-listing snapshot before/after) and manually against a real
+  checkout.
 
 **Exit:** `escape-ai repository analyze /path` produces a complete proposal without
-modifying the repository.
+modifying the repository. Satisfied today via `esc-exec repository analyze <path>`
+(execution framework, works now) and the orchestrator's HTTP endpoints above; the
+unified `escape-ai` CLI itself is still Phase 6.
 
 ### Phase 4 — Human-assisted manifest/profile construction
 
@@ -587,6 +626,13 @@ modifying the repository.
 - Import existing `context/project-profile.yaml` and framework references.
 - Generate/complete verification, report, and architecture profile flows.
 - Detect unresolved architecture stubs through the Gap Protocol.
+- Define component manifest templates: architecture-framework-owned template content
+  (schema, and one template per common archetype) carrying pre-filled
+  `architecture.profile_ids` and ownership/routing scaffolding, plus a `signals` block
+  describing what detected facts make it a match. The execution framework's onboarding
+  engine scores templates against Phase 3's detected signals and recommends a
+  best-fit template — accept it, pick another, or build a manifest from scratch. A
+  poor match across every template feeds the Who this is for readiness judgment.
 
 **Exit:** an incomplete proposal can resume after user input and reach valid shared
 manifests/profiles.
@@ -700,24 +746,31 @@ CLI/API.
 - Do not claim efficiency gains without comparable provider-backed measurements.
 - Do not commit transient `.esc-ai/runs/` history as a substitute for curated
   checkpoint promotion.
+- Do not attempt to reconcile a repository with extensive pre-existing conventions
+  that conflict with this system's own (see Who this is for); detect the drift and
+  decline, rather than quietly producing a worse result than a human would have.
 
 ## Recommended next task
 
-Phase 0 and Phase 1 (the bounded design/migration slice originally recommended here)
-are both complete — see each phase's entry in Implementation sequence for what
-shipped. `ampm-backend` migration was intentionally left out of that slice; it belongs
-to Phase 10's pilot validation, not Phase 0/1's composition protocol, so it's still
-open but not blocking.
+Phases 0, 1, 2, and 3 are all complete — see each phase's entry in Implementation
+sequence for what shipped. `ampm-backend` migration was intentionally left out of that
+work; it belongs to Phase 10's pilot validation against a repository that is a good
+fit by the Who this is for definition, so it's still open but not blocking.
 
-Next: **Phase 2 — Unified machine-local catalog**.
+Next: **Phase 4 — Human-assisted manifest/profile construction**.
 
-1. Define `system.yaml` schema and migration from `repositories.yaml`, deciding whether
-   it replaces or wraps the existing route registry (still open — see Decisions
-   required before implementation, item 1).
-2. Support framework, repository, and ecosystem routes in the new schema (ecosystems
-   already exist in the current registry; carry them forward).
-3. Add stale/missing route repair actions and credential-provider references.
-4. Keep catalog operations available as non-interactive commands.
+1. Define typed semantic questions and evidence attachments.
+2. Merge answers into generated manifests without overwriting authored fields.
+3. Import existing `context/project-profile.yaml` and framework references.
+4. Generate/complete verification, report, and architecture profile flows.
+5. Detect unresolved architecture stubs through the Gap Protocol.
+6. Component manifest templates: architecture-framework-owned template content
+   (pre-filled `architecture.profile_ids`, ownership/routing scaffolding) matched
+   against Phase 3's detected signals to recommend a best-fit template — turning "which
+   of 90+ architecture-framework docs apply to your component" into "here's our
+   recommendation, accept it, pick another, or build your own." A poor match across
+   all templates is an additional signal for the Who this is for readiness judgment,
+   not a separate mechanism.
 
 Do not begin the interactive wizard before this composition protocol is stable. The
 wizard would otherwise encode temporary naming, manifest, and instruction assumptions
