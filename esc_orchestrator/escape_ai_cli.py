@@ -6,17 +6,22 @@ from pathlib import Path
 from typing import Any
 
 from esc_exec.adapters import detect_build_system
+from esc_exec.checkpoints import create_checkpoint, checkpoint_path, update_checkpoint
 from esc_exec.dependencies import validate_dependency_graph
 from esc_exec.indexing import validate_indexes
 from esc_exec.manifests import overall_exit_code, validate_repository
+from esc_exec.measurement import process_metrics
 from esc_exec.model import ValidationResult
 from esc_exec.onboarding import analyze_repository, apply_onboarding_answers
 from esc_exec.planning import (
     WORK_TYPES, generate_multi_repository_workflow, generate_single_repository_workflow,
     planning_questions, route_objective,
 )
-from esc_exec.registry import add_route, default_registry_path, resolve_route
+from esc_exec.registry import add_route, default_registry_path, read_registry, resolve_route
+from esc_exec.yaml_io import load_yaml
 
+from esc_orchestrator.runtime import OpenCodeRuntime
+from esc_orchestrator.scheduler import Scheduler
 from esc_orchestrator.store import Store
 
 
@@ -32,8 +37,10 @@ MENU = [
 NOT_YET_IMPLEMENTED = (
     "Not yet implemented -- this is a later phase of the Escape AI plan "
     "(see plan/cohesive-system-integration-and-onboarding.md). Only repository "
-    "onboarding and planning new work are wired up so far."
+    "onboarding, planning new work, and resuming active work are wired up so far."
 )
+
+DEFAULT_OPENCODE_SERVER = "http://127.0.0.1:4097"
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +149,55 @@ def render_plan_result(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_active_work(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "No active work found across registered repositories."
+    lines = ["Active work:"]
+    for index, item in enumerate(items, 1):
+        status = item["latest_run_status"] or "never run"
+        checkpoint = " [checkpoint candidate pending review]" if item["checkpoint_present"] else ""
+        lines.append(
+            f"  {index}. {item['repository_id']}/{item['task_id']} -- {status}, "
+            f"{item['attempts']} attempt(s){checkpoint}"
+        )
+        lines.append(f"     {item['objective']}")
+    return "\n".join(lines)
+
+
+def render_execution_preview(repository_id: str, task_id: str, task_document: dict[str, Any]) -> str:
+    task = task_document["task"]
+    return "\n".join([
+        f"About to execute {repository_id}/{task_id}",
+        f"Objective: {task['objective']}",
+        f"Components: {', '.join(task_document['scope']['components'])}",
+        "Workspace/adapter/policy: placeholder defaults (read-only policy) pending real "
+        "Configure system support -- this is not a finished permission story.",
+    ])
+
+
+def render_execution_result(result: dict[str, Any]) -> str:
+    lines = [
+        f"Run {result['run_id']} (attempt {result['attempt']}): {result['status']}",
+    ]
+    if result.get("error"):
+        lines.append(f"Error: {result['error']}")
+    if result.get("output_path"):
+        lines.append(f"Output: {result['output_path']}")
+    return "\n".join(lines)
+
+
+def render_checkpoint_candidate(candidate: dict[str, Any]) -> str:
+    checkpoint, progress = candidate["checkpoint"], candidate["progress"]
+    lines = [
+        f"Checkpoint candidate from run {candidate['run_id']} -- status: {checkpoint['status']}",
+        "Blockers:", *(f"  - {blocker}" for blocker in progress.get("blockers", [])),
+        "Remaining:", *(f"  - {item}" for item in progress.get("remaining", [])),
+    ]
+    if progress.get("decisions"):
+        lines += ["Decisions:", *(f"  - {decision}" for decision in progress["decisions"])]
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Operations -- delegate to esc_exec/Store only, no prompts/printing. These are
 # what the end-to-end test exercises against a real repository.
@@ -177,6 +233,33 @@ def apply_answers(store: Store, registry: Path, repository_id: str, repository_p
     return result
 
 
+def onboarding_process_metrics(store: Store, repository_id: str) -> dict[str, Any] | None:
+    """None until both a proposal and applied answers exist -- there is no elapsed
+    time to report for an in-progress or never-started onboarding."""
+    proposal_record = store.get_onboarding_proposal(repository_id)
+    answers_record = store.get_onboarding_answers(repository_id)
+    if proposal_record is None or answers_record is None:
+        return None
+    return process_metrics(
+        "onboarding", repository_id,
+        proposal_record["created_at"], answers_record["updated_at"],
+        len(proposal_record["proposal"].get("semantic_questions", [])),
+        len(answers_record["answers"]),
+    )
+
+
+def planning_process_metrics(store: Store, initiative_id: str) -> dict[str, Any] | None:
+    draft_record = store.get_plan_draft(initiative_id)
+    result_record = store.get_plan_result(initiative_id)
+    if draft_record is None or result_record is None:
+        return None
+    return process_metrics(
+        "planning", initiative_id,
+        draft_record["created_at"], result_record["updated_at"],
+        len(draft_record["questions"]), len(result_record["answers"]),
+    )
+
+
 def repository_status(store: Store, registry: Path, repository_id: str) -> dict[str, Any]:
     proposal_record = store.get_onboarding_proposal(repository_id)
     pending_record = store.get_pending_answers(repository_id)
@@ -193,6 +276,7 @@ def repository_status(store: Store, registry: Path, repository_id: str) -> dict[
         "has_applied_answers": answers_record is not None,
         "instructions_file_present": bool(path and (path / "INSTRUCTIONS.md").is_file()),
         "workflows_directory_present": bool(path and (path / ".esc-ai" / "workflows").is_dir()),
+        "process_metrics": onboarding_process_metrics(store, repository_id),
     }
 
 
@@ -201,6 +285,139 @@ def validate_all(repository_path: Path, registry: Path) -> list[ValidationResult
     results += validate_indexes(repository_path)
     results.append(validate_dependency_graph(repository_path))
     return results
+
+
+# ---------------------------------------------------------------------------
+# Execution and resumption -- Phase 8. Workspace/adapter/policy defaults below are
+# PLACEHOLDERS pending real "Configure system" support (not built yet, still a stub
+# menu item). The policy default is deliberately conservative (read-only) -- never
+# default to a permissive policy just because there's no configuration UI yet.
+# ---------------------------------------------------------------------------
+
+def default_workspace(repository_id: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "workspace": {
+            "id": f"workspace-{repository_id}-default", "kind": "local",
+            "repository": repository_id, "isolation": "process",
+        },
+    }
+
+
+def default_adapter() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "adapter": {
+            "id": "opencode-default", "kind": "agent-runtime", "provider": "opencode",
+            "capabilities": ["sessions", "events", "tools", "permissions"],
+        },
+    }
+
+
+def default_policy() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "policy": {
+            "id": "default-readonly",
+            "description": "Placeholder pending Configure system: read-only, no edit/execute/network.",
+        },
+        "permissions": {"read": "allow", "edit": "deny", "execute": "deny", "network": "deny", "external_paths": "deny"},
+    }
+
+
+def active_work(store: Store, registry: Path) -> list[dict[str, Any]]:
+    """Read-only: every registered repository's `.esc-ai/workflows/active/*/task.yaml`,
+    cross-referenced against this orchestrator's own run/attempt records. No writes."""
+    catalog = read_registry(registry)
+    items: list[dict[str, Any]] = []
+    for repository_id, route in catalog.get("repositories", {}).items():
+        repository_path = Path(route["path"])
+        active_dir = repository_path / ".esc-ai" / "workflows" / "active"
+        if not active_dir.is_dir():
+            continue
+        for task_dir in sorted(path for path in active_dir.iterdir() if path.is_dir()):
+            task_path = task_dir / "task.yaml"
+            if not task_path.is_file():
+                continue
+            task_document = load_yaml(task_path)
+            task_id = task_document["task"]["id"]
+            latest_run = store.get_latest_run_for_task(task_id)
+            candidate_present = bool(
+                latest_run and latest_run["status"] == "failed" and latest_run.get("output_path")
+                and (Path(latest_run["output_path"]) / "checkpoint.yaml").is_file()
+            )
+            items.append({
+                "repository_id": repository_id,
+                "task_id": task_id,
+                "objective": task_document["task"]["objective"],
+                "attempts": store.get_attempt_count(task_id),
+                "latest_run_status": latest_run["status"] if latest_run else None,
+                "checkpoint_present": candidate_present,
+            })
+    return items
+
+
+def execute_task(
+    store: Store, registry: Path, repository_id: str, repository_path: Path, task_id: str,
+    runtime: Any = None, opencode_server: str = DEFAULT_OPENCODE_SERVER,
+) -> dict[str, Any]:
+    """
+    Connects an approved, already-written task.yaml to real execution via the same
+    Scheduler/Store the HTTP daemon uses -- submit, wait for the background worker to
+    finish (queue.join()), then close. A CLI invocation is inherently one task at a
+    time, so this reuses Scheduler's exact submit/execute/update_run sequence
+    without needing a long-lived daemon around it.
+    """
+    task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
+    if not task_path.is_file():
+        raise ValueError(f"no task.yaml found for `{task_id}` in `{repository_id}`; plan apply first")
+    contracts = {
+        "task": load_yaml(task_path),
+        "workspace": default_workspace(repository_id),
+        "adapter": default_adapter(),
+        "policy": default_policy(),
+    }
+    attempt = store.record_attempt(task_id)
+    scheduler = Scheduler(store, runtime or OpenCodeRuntime(opencode_server, registry), registry)
+    try:
+        _, run_id = scheduler.submit(contracts)
+        scheduler.queue.join()
+    finally:
+        scheduler.close()
+    run = store.get_run(run_id)
+    return {
+        "task_id": task_id, "run_id": run_id, "attempt": attempt,
+        "status": run["status"], "error": run.get("error"), "output_path": run.get("output_path"),
+    }
+
+
+def checkpoint_candidate(store: Store, task_id: str) -> dict[str, Any]:
+    run = store.get_latest_run_for_task(task_id)
+    if run is None or run["status"] != "failed" or not run.get("output_path"):
+        raise ValueError(f"no failed run with a checkpoint candidate for `{task_id}`")
+    candidate_path = Path(run["output_path"]) / "checkpoint.yaml"
+    if not candidate_path.is_file():
+        raise ValueError(f"no checkpoint candidate found at {candidate_path}")
+    return {"run_id": run["id"], **load_yaml(candidate_path)}
+
+
+def promote_checkpoint(repository_path: Path, task_id: str, candidate: dict[str, Any]) -> Path:
+    """Promotes a transient run-failure checkpoint candidate into the durable,
+    committable location -- always after human review of `candidate`'s contents,
+    never a blind copy triggered automatically on failure."""
+    checkpoint, progress = candidate["checkpoint"], candidate["progress"]
+    task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
+    if not task_path.is_file():
+        raise ValueError(f"no task.yaml for `{task_id}` to attach the checkpoint to")
+    kwargs = dict(
+        run_id=checkpoint.get("run_id"), status=checkpoint.get("status", "blocked"),
+        completed=progress.get("completed"), decisions=progress.get("decisions"),
+        remaining=progress.get("remaining"), blockers=progress.get("blockers"),
+        artifacts=progress.get("artifacts"), last_event_sequence=progress.get("last_event_sequence"),
+    )
+    if checkpoint_path(repository_path, task_id).is_file():
+        return update_checkpoint(repository_path, task_id, **kwargs)
+    return create_checkpoint(repository_path, task_path, **kwargs)
 
 
 def draft_plan(store: Store, registry: Path, initiative_id: str, work_type: str, objective: str, repository_values: list[str]) -> dict[str, Any]:
@@ -293,7 +510,9 @@ def run_interactive(store: Store, registry: Path) -> int:
         return run_onboarding_interactive(store, registry)
     if choice == "2":
         return run_planning_interactive(store, registry)
-    if choice in {"3", "4", "5", "6"}:
+    if choice == "3":
+        return run_resume_interactive(store, registry)
+    if choice in {"4", "5", "6"}:
         print(NOT_YET_IMPLEMENTED)
         return 0
     print("Unrecognized choice.")
@@ -449,6 +668,70 @@ def run_planning_interactive(store: Store, registry: Path) -> int:
     return 0
 
 
+def run_resume_interactive(store: Store, registry: Path) -> int:
+    items = active_work(store, registry)
+    print(render_active_work(items))
+    if not items:
+        return 0
+    try:
+        choice = input("Select a task by number to act on (blank to go back): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled.")
+        return 0
+    if not choice:
+        return 0
+    try:
+        selected = items[int(choice) - 1]
+    except (ValueError, IndexError):
+        print("Unrecognized choice.")
+        return 1
+    repository_id, task_id = selected["repository_id"], selected["task_id"]
+    _, repository_path = resolve_repository(repository_id, registry)
+
+    print("Actions: 1. Execute now  2. Promote checkpoint candidate  (blank to go back)")
+    try:
+        action = input("> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled.")
+        return 0
+
+    if action == "1":
+        task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
+        print(render_execution_preview(repository_id, task_id, load_yaml(task_path)))
+        try:
+            confirm = input("Execute this task now? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled -- nothing was executed.")
+            return 0
+        if confirm != "y":
+            print("Cancelled -- nothing was executed.")
+            return 0
+        result = execute_task(store, registry, repository_id, repository_path, task_id)
+        print(render_execution_result(result))
+        return 0
+
+    if action == "2":
+        try:
+            candidate = checkpoint_candidate(store, task_id)
+        except ValueError as exc:
+            print(f"Cannot promote: {exc}")
+            return 1
+        print(render_checkpoint_candidate(candidate))
+        try:
+            confirm = input("Promote this checkpoint into the durable workflow? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled -- nothing was promoted.")
+            return 0
+        if confirm != "y":
+            print("Cancelled -- nothing was promoted.")
+            return 0
+        path = promote_checkpoint(repository_path, task_id, candidate)
+        print(f"Promoted checkpoint to {path}")
+        return 0
+
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Non-interactive subcommands.
 # ---------------------------------------------------------------------------
@@ -491,6 +774,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan_commands.add_parser("apply").add_argument("initiative_id")
     plan_commands.add_parser("status").add_argument("initiative_id")
+
+    task = subcommands.add_parser("task", help="Execute a planned task and manage its checkpoints")
+    task_commands = task.add_subparsers(dest="task_command", required=True)
+
+    task_run = task_commands.add_parser("run")
+    task_run.add_argument("repository")
+    task_run.add_argument("task_id")
+    task_run.add_argument("--yes", action="store_true", help="Actually execute; without this, preview only")
+    task_run.add_argument("--opencode", default=DEFAULT_OPENCODE_SERVER)
+
+    task_promote = task_commands.add_parser("promote-checkpoint")
+    task_promote.add_argument("repository")
+    task_promote.add_argument("task_id")
+    task_promote.add_argument("--yes", action="store_true", help="Actually promote; without this, preview only")
+
+    resume_cmd = subcommands.add_parser("resume", help="Show active work across registered repositories")
+    resume_cmd.add_argument("--json", action="store_true")
 
     return parser
 
@@ -604,10 +904,55 @@ def _dispatch_plan(args: argparse.Namespace, store: Store, registry: Path) -> in
             "has_draft": draft is not None,
             "has_pending_answers": pending is not None,
             "has_result": result is not None,
+            "process_metrics": planning_process_metrics(store, args.initiative_id),
         }))
         return 0
 
     return 1
+
+
+def _dispatch_task(args: argparse.Namespace, store: Store, registry: Path) -> int:
+    if args.task_command == "run":
+        try:
+            repository_id, repository_path = resolve_repository(args.repository, registry)
+            task_path = repository_path / ".esc-ai" / "workflows" / "active" / args.task_id / "task.yaml"
+            if not task_path.is_file():
+                print(f"INVALID    no task.yaml found for `{args.task_id}` in `{repository_id}`")
+                return 1
+            task_document = load_yaml(task_path)
+        except (KeyError, FileNotFoundError) as exc:
+            print(f"INVALID    {exc}")
+            return 1
+        print(render_execution_preview(repository_id, args.task_id, task_document))
+        if not args.yes:
+            print("Preview only -- re-run with --yes to actually execute.")
+            return 0
+        result = execute_task(store, registry, repository_id, repository_path, args.task_id, opencode_server=args.opencode)
+        print(render_execution_result(result))
+        return 0 if result["status"] == "succeeded" else 1
+
+    if args.task_command == "promote-checkpoint":
+        try:
+            repository_id, repository_path = resolve_repository(args.repository, registry)
+            candidate = checkpoint_candidate(store, args.task_id)
+        except (ValueError, KeyError, FileNotFoundError) as exc:
+            print(f"INVALID    {exc}")
+            return 1
+        print(render_checkpoint_candidate(candidate))
+        if not args.yes:
+            print("Preview only -- re-run with --yes to actually promote.")
+            return 0
+        path = promote_checkpoint(repository_path, args.task_id, candidate)
+        print(f"Promoted checkpoint to {path}")
+        return 0
+
+    return 1
+
+
+def _dispatch_resume(args: argparse.Namespace, store: Store, registry: Path) -> int:
+    items = active_work(store, registry)
+    print(json.dumps(items, indent=2) if args.json else render_active_work(items))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -620,6 +965,10 @@ def main(argv: list[str] | None = None) -> int:
         return _dispatch_repository(args, store, registry)
     if args.command == "plan":
         return _dispatch_plan(args, store, registry)
+    if args.command == "task":
+        return _dispatch_task(args, store, registry)
+    if args.command == "resume":
+        return _dispatch_resume(args, store, registry)
     return 1
 
 

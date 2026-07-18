@@ -30,13 +30,23 @@ class Store:
         CREATE TABLE IF NOT EXISTS plan_drafts(initiative_id TEXT PRIMARY KEY, work_type TEXT NOT NULL, objective TEXT NOT NULL, repositories TEXT NOT NULL, routing TEXT NOT NULL, questions TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS plan_pending_answers(initiative_id TEXT PRIMARY KEY, answers TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS plan_results(initiative_id TEXT PRIMARY KEY, answers TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS task_attempts(task_id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, updated_at TEXT NOT NULL);
         """)
 
     def submit(self, contracts: dict[str, Any]) -> tuple[str, str]:
+        """
+        Upserts the task row (retrying a task resubmits its same task_id -- this
+        must not fail as a duplicate) and always inserts a fresh run row, since each
+        attempt is its own run regardless of whether the task_id has been seen before.
+        """
         task_id = contracts["task"]["task"]["id"]
         run_id, timestamp = f"run-{uuid.uuid4().hex}", now()
         with self.lock, self.connection:
-            self.connection.execute("INSERT INTO tasks VALUES(?,?,?,?,?)", (task_id, "queued", json.dumps(contracts), timestamp, timestamp))
+            self.connection.execute(
+                "INSERT INTO tasks(id,status,contracts,created_at,updated_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET status=excluded.status, contracts=excluded.contracts, updated_at=excluded.updated_at",
+                (task_id, "queued", json.dumps(contracts), timestamp, timestamp),
+            )
             self.connection.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?)", (run_id, task_id, "queued", None, None, timestamp, timestamp))
             self._event(run_id, "run.queued", {"task_id": task_id})
         return task_id, run_id
@@ -59,6 +69,30 @@ class Store:
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         row = self.connection.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         return dict(row) if row else None
+
+    def get_latest_run_for_task(self, task_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM runs WHERE task_id=? ORDER BY created_at DESC LIMIT 1", (task_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def record_attempt(self, task_id: str) -> int:
+        """Increment and return this task's attempt count -- retrying a failed task
+        must know it's a retry, not silently look like the first attempt."""
+        timestamp = now()
+        with self.lock, self.connection:
+            row = self.connection.execute("SELECT attempts FROM task_attempts WHERE task_id=?", (task_id,)).fetchone()
+            attempts = (row["attempts"] if row else 0) + 1
+            self.connection.execute(
+                "INSERT INTO task_attempts(task_id,attempts,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(task_id) DO UPDATE SET attempts=excluded.attempts, updated_at=excluded.updated_at",
+                (task_id, attempts, timestamp),
+            )
+            return attempts
+
+    def get_attempt_count(self, task_id: str) -> int:
+        row = self.connection.execute("SELECT attempts FROM task_attempts WHERE task_id=?", (task_id,)).fetchone()
+        return row["attempts"] if row else 0
 
     def events(self, run_id: str) -> list[dict[str, Any]]:
         rows = self.connection.execute("SELECT sequence,type,payload,created_at FROM events WHERE run_id=? ORDER BY sequence", (run_id,)).fetchall()

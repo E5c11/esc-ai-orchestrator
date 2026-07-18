@@ -48,6 +48,18 @@ escape-ai plan draft <initiative-id> <request.json>       # {work_type, objectiv
 escape-ai plan answer <initiative-id> <answers.json>      # stage answers
 escape-ai plan apply <initiative-id>                      # the explicit write step
 escape-ai plan status <initiative-id>
+
+escape-ai resume [--json]                                 # active work across registered
+                                                           # repositories: latest run status,
+                                                           # attempt count, checkpoint presence
+escape-ai task run <repository-id> <task-id> [--yes]      # preview by default; --yes submits
+                                                           # the task through the real scheduler
+                                                           # and runtime adapter
+escape-ai task promote-checkpoint <repository-id> <task-id> [--yes]   # preview the failure
+                                                                       # candidate, or promote it
+                                                                       # into a durable
+                                                                       # .esc-ai/workflows/active/
+                                                                       # checkpoint with --yes
 ```
 
 `analyze`/`answer`/`apply` (and `plan draft`/`answer`/`apply`) are deliberately
@@ -63,6 +75,17 @@ non-interactive paths print exactly which files to review and commit yourself.
 
 Re-running onboarding for a repository with unchanged inputs resumes from the stored
 proposal instead of re-analyzing from scratch.
+
+`task run` and `promote-checkpoint` follow the same preview-then-`--yes` pattern:
+without `--yes` they print what would happen (objective, components, and — for
+`run` — the workspace/adapter/policy that would be used) and exit without submitting
+or writing anything; `--yes` is the one explicit approval boundary that actually
+submits the task to the `Scheduler`/runtime or writes the promoted checkpoint file.
+A failed attempt is retained as a transient checkpoint candidate and does not block
+retrying the same task; each retry increments an attempt count tracked per task.
+Workspace, adapter, and policy are currently placeholder defaults (a conservative,
+read-only policy) pending real "Configure system" support — `task run`'s preview
+output says so explicitly rather than presenting them as finished configuration.
 
 Endpoints:
 

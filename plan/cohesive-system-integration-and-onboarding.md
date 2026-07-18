@@ -745,16 +745,55 @@ workflows in every participating repository. Verified end to end via the real
 `escape-ai plan draft/answer/apply` chain for both a single-repository and a
 two-repository initiative (see each repo's Phase 7 tracking doc for the specifics).
 
-### Phase 8 — Integrated execution lifecycle
+### Phase 8 — Integrated execution lifecycle — **Complete**
 
-- Connect approved task graphs to scheduler runs.
-- Resolve architecture instructions into bounded task context.
-- Add approval gates, retry/attempt semantics, and checkpoint promotion.
-- Provide active-work/resume views across repositories.
-- Retain metrics for onboarding, planning, execution, and rework.
+- Connect approved task graphs to scheduler runs. **Done** — `escape-ai task run
+  <repository-id> <task-id> [--yes]` resolves a task's stored contracts and submits
+  through the same `Scheduler`/`Store`/runtime path the HTTP daemon already used
+  internally; follows the established preview-then-`--yes` boundary (no submission
+  without `--yes`).
+- Resolve architecture instructions into bounded task context. **Done** — the
+  execution framework's `OpenCodeAdapter._instruction_bundle` composes the plan's
+  six precedence levels (policy, execution-framework core, architecture
+  documents, workflow policy, component manifests, active task) via
+  `order_instruction_bundle`, writing `instruction-bundle.json` per run; see that
+  repo's Phase 8 tracking doc. The extension-namespace-conflict check is wired in
+  but currently a no-op — no manifest field yet enumerates specific document IDs
+  for a project extension.
+- Add approval gates, retry/attempt semantics, and checkpoint promotion. **Done** —
+  `Store.submit()` now upserts the `tasks` table so retrying the same task id never
+  raises a uniqueness error; a new `task_attempts` table tracks attempt counts;
+  `task promote-checkpoint <repository-id> <task-id> [--yes]` promotes a transient
+  failure candidate (`.esc-ai/runs/<run-id>/checkpoint.yaml`) into the durable,
+  committable `.esc-ai/workflows/active/<task-id>/checkpoint.yaml`.
+- Provide active-work/resume views across repositories. **Done** — `escape-ai resume
+  [--json]` and interactive menu choice "3" show every known task's latest run
+  status, attempt count, and checkpoint presence across every registered
+  repository in one place.
+- Retain metrics for onboarding, planning, execution, and rework. **Done** — the
+  execution framework's new `process_metrics()` (elapsed time, questions asked vs.
+  answered) is now surfaced through `repository status`/`plan status`; execution/
+  rework metrics already existed from earlier phases.
+
+Workspace, adapter, and policy selection are deliberately **not** part of this
+phase's scope: `default_workspace`/`default_adapter`/`default_policy` are
+placeholder defaults (a workspace rooted at the repository path, the
+`OpenCodeAdapter`, and a conservative read-only policy), pending real "Configure
+system" support that doesn't exist yet. `task run`'s preview output says this
+explicitly rather than presenting placeholder configuration as finished. The
+policy-to-tool-grant enforcement gap flagged above was closed in a prior round
+(tool grants are now actually derived from `policy.yaml` permissions, not a
+hardcoded constant) — this phase builds on that fix rather than deferring it
+further.
 
 **Exit:** the user can plan, execute, stop, and resume a linked task through the same
-CLI/API.
+CLI/API. Verified end to end against a real temp Gradle repository (`repository
+add/analyze/answer/apply` → `plan draft/answer/apply` → `resume` → `task run`
+preview) and, since no live OpenCode server was available in this environment, the
+execute → fail → checkpoint → promote → retry → succeed → resume cycle was verified
+directly against the CLI's own functions with an injected fake runtime (see each
+repo's Phase 8 tracking doc for specifics) — live-server behavior remains
+unverified.
 
 ### Phase 9 — Optional richer interfaces
 
@@ -825,34 +864,33 @@ CLI/API.
 
 ## Recommended next task
 
-Phases 0 through 7 are all complete — see each phase's entry in Implementation
+Phases 0 through 8 are all complete — see each phase's entry in Implementation
 sequence for what shipped and what's honestly still open within each (Phase 5's
 migration-diff handling for a repository with pre-existing content is deferred
 pending Phase 10 evidence; Phase 6's index/dependency-graph staleness gap in
 `apply_onboarding_answers` was found and fixed shortly after that phase landed;
 Phase 7 built the typed-question substitute for planning, not the live conversation,
-which stays gated on the policy-to-tool-grant enforcement gap). `ampm-backend`
-migration was intentionally left out of this work; it belongs to Phase 10's pilot
-validation against a repository that is a good fit by the Who this is for
-definition, so it's still open but not blocking.
+which stays gated on the policy-to-tool-grant enforcement gap; Phase 8's workspace/
+adapter/policy selection is a placeholder pending real "Configure system" support,
+and its execute/retry/promote cycle was verified against an injected fake runtime
+rather than a live OpenCode server, since none was available in this environment).
+`ampm-backend` migration was intentionally left out of this work; it belongs to
+Phase 10's pilot validation against a repository that is a good fit by the Who this
+is for definition, so it's still open but not blocking.
 
-A user can now take an objective and a repository selection all the way to approved,
-independently resumable workflow files — `escape-ai plan draft/answer/apply` — for
-both single- and multi-repository initiatives. That closes out onboarding and
-planning (Phases 0-7); everything from here is about *executing* an approved task
-graph, not producing one.
+A user can now take an approved, independently resumable task graph — produced by
+`escape-ai plan draft/answer/apply` — all the way through execution: submit it to
+the real scheduler/runtime, retry a failed attempt, promote a failure into a durable
+checkpoint, and see active work and its status across every registered repository,
+all through `escape-ai task run`/`task promote-checkpoint`/`resume`. That closes out
+onboarding, planning, and core execution (Phases 0-8); everything from here is about
+richer interfaces on top of the same orchestrator, not new orchestration behavior.
 
-Next: **Phase 8 — Integrated execution lifecycle**.
+Next: **Phase 9 — Optional richer interfaces.**
 
-1. Connect approved task graphs to scheduler runs.
-2. Resolve architecture instructions into bounded task context.
-3. Add approval gates, retry/attempt semantics, and checkpoint promotion.
-4. Provide active-work/resume views across repositories.
-5. Retain metrics for onboarding, planning, execution, and rework.
+1. Stabilize the API/state contracts first.
+2. Build a web or JetBrains UI without duplicating orchestration logic.
+3. Display repository readiness, manifest questions, task graphs, approvals, runs,
+   checkpoints, and metrics.
 
-This phase is where the policy-to-tool-grant enforcement gap (flagged since Phase 1,
-carried forward through Phases 6 and 7) stops being deferrable: execution is the
-first point where a run can actually mutate a repository, so approval gates without
-real tool-grant enforcement behind them would be exactly the false-safety problem
-this plan has been careful to avoid naming and not building around. Close that gap
-before or alongside this phase, not after it.
+Do not start Phase 9 as part of this task — it is scoped separately.
