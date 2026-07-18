@@ -83,6 +83,7 @@ Escape AI (`escape-ai` CLI/UI owned by orchestrator)
   |     +-- execution framework route
   |     +-- orchestrator configuration
   |     +-- registered repository routes
+  |     +-- ecosystem groupings (named sets of related repository IDs)
   |
   +-- selected repository/ies
         +-- esc-execution.yaml                 shared repository identity
@@ -93,9 +94,42 @@ Escape AI (`escape-ai` CLI/UI owned by orchestrator)
         +-- <component>/esc-index.json          bounded structural routing
         +-- <component>/esc-*-profile.yaml      execution/architecture policies
         +-- INSTRUCTIONS.md                     thin generated inheritance pointer
-        +-- workflows/README.md                 repository-specific workflow policy
-        +-- workflows/active|archive/           durable project work
+        +-- .esc-ai/                            repository-local Escape AI directory
+              +-- workflows/README.md           repository-specific workflow policy
+              +-- workflows/active|archive/     durable project work (committed)
+              +-- runs/<run-id>/                transient per-run task context (gitignored)
 ```
+
+### Repository-local Escape AI directory
+
+`.esc-ai/` is the single, obvious location for everything Escape AI tracks about
+ongoing work in a repository — mirroring how `.claude/` holds Claude Code's own
+committed, human-authored material without the dot-prefix meaning "hidden" or
+"uninteresting."
+
+The identity/discovery files — `esc-execution.yaml`, `esc-index.json`,
+`esc-dependencies.json`, `<component>/esc-component.yaml`, and `INSTRUCTIONS.md` — stay
+at repository/component root. Their entire purpose is to be the first thing any tool or
+human discovers when it opens the repository or a component, the same reason
+`package.json` is not nested inside `.npm/`. Hiding them would defeat that purpose.
+
+Everything else Escape AI manages as a record of *work being done*, rather than *what
+the repository is*, lives under `.esc-ai/`:
+
+- `.esc-ai/workflows/README.md`, `.esc-ai/workflows/active/`,
+  `.esc-ai/workflows/archive/` — the durable, human-reviewed workflow package (formerly
+  `workflows/` at root). Committed.
+- `.esc-ai/runs/<run-id>/` — transient per-run task context, verification plans,
+  events, and run metrics, written next to the actual repository being worked on
+  rather than the orchestrator process's own working directory. Regenerable from
+  indexes and task specs each run; gitignored.
+
+Durable handoff between people or agents is the job of a **checkpoint**
+(`.esc-ai/workflows/active/<task-id>/checkpoint.yaml`), not of committing raw run
+history. A checkpoint is a curated summary — completed steps, decisions, remaining
+work, blockers, referenced artifacts — produced by promoting the parts of a run worth
+keeping. Committing every `.esc-ai/runs/` attempt would duplicate that mechanism with
+an uncurated, ever-growing alternative.
 
 ### Instruction precedence
 
@@ -157,6 +191,16 @@ endpoint preferences, and non-secret UI defaults. Secrets remain in environment 
 dedicated credential provider. Because the catalog is outside consuming repositories,
 it does not need each repository's `.gitignore`; any optional repo-local override must
 use a canonical ignored filename and be validated as uncommitted.
+
+The catalog also supports naming an **ecosystem** — a set of repository IDs that are
+commonly orchestrated together (for example `ampm: [ampm-backend, ampm-mobile,
+ampm-contracts]`). Ecosystem membership is static, user-declared grouping data, so it
+belongs in the catalog beside `repositories:`/`frameworks:`, validated so every member
+ID is itself a registered repository. It is a convenience for routing and
+multi-repository planning, not a source of truth: the *live* coordination view of an
+in-flight cross-repository initiative (task graph, cross-repo status) is run state, not
+catalog data, and belongs in the orchestrator's existing persistence layer (new
+`initiatives`/`initiative_tasks` tables) rather than a second file-based cache.
 
 Missing or stale routes must produce an exact repair action. The system must never scan
 arbitrary parent directories for repositories.
@@ -266,13 +310,13 @@ Onboarding creates or minimally adapts:
 
 ```text
 INSTRUCTIONS.md
-workflows/README.md
-workflows/active/README.md
-workflows/archive/README.md
+.esc-ai/workflows/README.md
+.esc-ai/workflows/active/README.md
+.esc-ai/workflows/archive/README.md
 ```
 
 Generated `INSTRUCTIONS.md` is a thin pointer; it does not copy either framework.
-`workflows/README.md` contains only repository-specific policy such as:
+`.esc-ai/workflows/README.md` contains only repository-specific policy such as:
 
 - project-specific framework extensions and precedence;
 - workflow naming/location rules;
@@ -332,8 +376,8 @@ The orchestrator:
 Create:
 
 ```text
-workflows/active/<task-id>/task.yaml
-workflows/active/<task-id>/README.md
+.esc-ai/workflows/active/<task-id>/task.yaml
+.esc-ai/workflows/active/<task-id>/README.md
 ```
 
 The README is a human view generated from or aligned with the task specification. It
@@ -357,6 +401,11 @@ The orchestrator owns the live coordination view, but committed repository workf
 remain sufficient to resume independently. Cross-repository ordering, shared decisions,
 compatibility gates, and artifact/version handoffs must be explicit.
 
+Cross-repository initiatives commonly span a declared ecosystem (see Machine-local
+catalog), but an initiative may include repositories outside any declared ecosystem
+too — ecosystem membership is a routing convenience, not a requirement for an
+initiative to exist.
+
 The user approves the task graph and per-repository diffs before files are written.
 
 ## Execution and resumption flow
@@ -373,6 +422,12 @@ For an approved task, the orchestrator should:
 8. Produce a transient checkpoint candidate on interruption/failure.
 9. Promote reviewed durable state into the repository workflow.
 10. Record efficiency metrics and support comparable cohort analysis.
+
+Per-run artifacts (task context, verification plan, events, run metrics) are written
+to `.esc-ai/runs/<run-id>/` inside the target repository, resolved from the task's
+declared repository — never a location relative to wherever the orchestrator process
+happens to run. Checkpoints, once promoted, are the durable artifact that lives in
+`.esc-ai/workflows/active/<task-id>/`.
 
 Starting `escape-ai` later should show active tasks and checkpoints across registered
 repositories, allowing the user to resume without reconstructing context.
@@ -403,17 +458,23 @@ with unchanged inputs must be safe and byte-identical.
 
 ### Phase 0 — Naming and ownership contracts
 
-- Treat the GitHub and local checkout rename as complete.
+- Treat the GitHub and local checkout rename as complete. **Done.**
 - Update titles, package/repository metadata, route IDs, links, schema IDs where
-  appropriate, and consuming references.
+  appropriate, and consuming references. **Done.**
 - Publish the three-product ownership matrix and conflict precedence.
-- Add migration diagnostics for the old framework ID.
+- Add migration diagnostics for the old framework ID. **Done** — `resolve_route` names
+  the exact renamed ID, and `validate_registry`/`validate_repository` mark it `STALE`.
 
 **Exit:** every repository refers to the canonical IDs and all existing validation
 suites pass.
 
 ### Phase 1 — Framework composition protocol
 
+- Introduce `.esc-ai/` as the repository-local Escape AI directory; move `workflows/`
+  to `.esc-ai/workflows/` in all three existing repositories and every reference to it.
+- Resolve per-task `.esc-ai/runs/<run-id>/` output from the task's target repository
+  instead of a single orchestrator-process-relative output root.
+- Add `ecosystems:` grouping to the machine-local catalog schema and registry.
 - Define a versioned framework descriptor for architecture and execution frameworks.
 - Extend repository/component manifests with framework versions, architecture
   selectors, extensions, workflow location, and derived-artifact declarations.
@@ -423,7 +484,8 @@ suites pass.
   orchestrator.
 
 **Exit:** a task context identifies the exact execution and architecture documents to
-load without hard-coded checkout paths.
+load without hard-coded checkout paths, and per-run artifacts land inside the target
+repository's `.esc-ai/` directory rather than the orchestrator's own working directory.
 
 ### Phase 2 — Unified machine-local catalog
 
@@ -525,8 +587,10 @@ CLI/API.
 ## Decisions required before implementation
 
 1. Decide whether `system.yaml` replaces or wraps the existing route registry.
-2. Decide how framework schema compatibility is expressed: exact version, compatible
-   major version, or capability negotiation.
+2. **Decided:** compatible major version. A repository manifest declares a framework's
+   major version; the resolver accepts any checked-out minor/patch sharing that major.
+   Matches how the frameworks already evolve — additive, non-breaking minor bumps
+   (e.g. `document.yaml` 1.1 → 1.2 added enum values without breaking consumers).
 3. Decide whether `context/project-profile.yaml` is migrated immediately or supported
    through a deprecation window.
 4. Define which repository-specific instruction fields are structured versus free-form
@@ -536,6 +600,15 @@ CLI/API.
    as a patch bundle.
 7. Select the second, smaller repository for clean onboarding validation.
 8. Configure a working runtime provider before measuring real end-to-end efficiency.
+9. **Decided:** `workflows/` moves under `.esc-ai/workflows/`, consolidated with the
+   new `.esc-ai/runs/` — one obvious repository-local root for everything Escape AI
+   tracks about ongoing work, rather than splitting activity/history across a visible
+   and a hidden location. Identity/discovery manifests stay at root (see
+   Repository-local Escape AI directory).
+10. **Decided:** repositories may be grouped into a named ecosystem in the
+    machine-local catalog; live cross-repository coordination state belongs in the
+    orchestrator's own persistence layer, not a second file-based cache (see
+    Machine-local catalog).
 
 ## Non-goals and safeguards
 
@@ -549,15 +622,23 @@ CLI/API.
   understood; committed tasks must carry stable references.
 - Do not make the terminal wizard the system architecture; it is one API client.
 - Do not claim efficiency gains without comparable provider-backed measurements.
+- Do not commit transient `.esc-ai/runs/` history as a substitute for curated
+  checkpoint promotion.
 
 ## Recommended next task
 
 Start with **Phase 0 and Phase 1 together as a bounded design/migration slice**:
 
 1. Complete the architecture framework's internal title and reference migration.
-2. Define the framework descriptor and shared manifest extensions.
-3. Implement composed framework resolution for one read-only task.
-4. Migrate `ampm-backend` references and validate all three repositories.
+   **Done.**
+2. Add a migration diagnostic for the renamed framework ID. **Done.**
+3. Introduce `.esc-ai/` as the repository-local Escape AI directory (move
+   `workflows/` into it, add `runs/`), and resolve per-task run output from the
+   target repository instead of the orchestrator process's own working directory.
+4. Add `ecosystems:` grouping to the machine-local catalog.
+5. Define the framework descriptor and shared manifest extensions.
+6. Implement composed framework resolution for one read-only task.
+7. Migrate `ampm-backend` references and validate all three repositories.
 
 Do not begin the interactive wizard before this composition protocol is stable. The
 wizard would otherwise encode temporary naming, manifest, and instruction assumptions
