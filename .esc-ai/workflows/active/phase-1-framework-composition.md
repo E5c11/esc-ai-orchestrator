@@ -16,11 +16,16 @@ only this repo's share of the work and its current status.
 - [x] Rename `workflows/` -> `.esc-ai/workflows/` in this repo; updated
       `.esc-ai/workflows/README.md`, `.esc-ai/workflows/active/README.md`,
       `README.md`, and this file's own path.
-- [ ] Resolve `.esc-ai/runs/<run-id>/` output per task from the target repository
-      (`Scheduler._work` / `OpenCodeRuntime.execute`) instead of the single
-      process-wide `--output` CLI flag. The orchestrator's own SQLite DB
+- [x] Resolve `.esc-ai/runs/<run-id>/` output per task from the target repository.
+      `OpenCodeAdapter.execute` (execution framework) now derives `run_dir` itself, so
+      `Runtime.execute`/`OpenCodeRuntime.execute` dropped their `output_root`
+      parameter entirely. `Scheduler` now takes a `registry: Path` instead of an
+      `output_root: Path`; its failure-checkpoint-candidate path resolves the target
+      repository via `resolve_route` and writes to
+      `<repository>/.esc-ai/runs/<run-id>/checkpoint.yaml`. The CLI's process-wide
+      `--output` flag is gone. The orchestrator's own SQLite DB
       (`.orchestrator/orchestrator.db`) stays process-local — only per-run artifacts
-      move into the target repository.
+      moved into the target repository.
 
 ## Already done (Phase 0)
 

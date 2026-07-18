@@ -16,7 +16,7 @@ class OpenCodeRuntime:
         self.adapter = OpenCodeAdapter(OpenCodeClient(server), registry)
         self.registry = registry
 
-    def execute(self, contracts: dict[str, Any], output_root: Path) -> Path:
+    def execute(self, contracts: dict[str, Any]) -> Path:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             paths = {}
@@ -28,7 +28,7 @@ class OpenCodeRuntime:
             )
             plan = build_verification_plan(repository, paths["task"], root / "verification-plan.json")
             run_dir = self.adapter.execute(
-                paths["task"], paths["workspace"], paths["adapter"], paths["policy"], output_root
+                paths["task"], paths["workspace"], paths["adapter"], paths["policy"]
             )
             write_json(run_dir / "verification-plan.json", plan)
             return run_dir

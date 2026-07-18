@@ -46,7 +46,11 @@ Failure candidates remain transient until reviewed. Promote durable handoff stat
 the consuming repository with `esc-exec checkpoint create` or `checkpoint update`, then
 commit `.esc-ai/workflows/active/<task-id>/checkpoint.yaml`.
 
-Local state lives under `.orchestrator/` and is not committed.
+The orchestrator's own SQLite database (`.orchestrator/orchestrator.db`) is
+process-local state and is not committed. Per-run artifacts (task context,
+verification plan, events, run metrics, and failure-checkpoint candidates) are no
+longer stored there — they live in the target repository's `.esc-ai/runs/<run-id>/`,
+resolved from the task's declared repository.
 
 ## Cohesive system roadmap
 

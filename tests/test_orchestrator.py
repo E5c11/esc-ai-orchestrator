@@ -6,14 +6,18 @@ from tempfile import TemporaryDirectory
 import unittest
 from urllib.request import Request, urlopen
 
+from esc_exec.registry import add_route
 from esc_orchestrator.api import server
 from esc_orchestrator.scheduler import Scheduler
 from esc_orchestrator.store import Store
 
 
 class FakeRuntime:
-    def execute(self, contracts, output_root):
-        path = output_root / contracts["task"]["task"]["id"]
+    def __init__(self, output_root: Path):
+        self.output_root = output_root
+
+    def execute(self, contracts):
+        path = self.output_root / contracts["task"]["task"]["id"]
         path.mkdir(parents=True)
         (path / "run.json").write_text("{}")
         (path / "verification-summary.json").write_text(
@@ -26,7 +30,7 @@ class FakeRuntime:
 
 
 class FailingRuntime:
-    def execute(self, contracts, output_root):
+    def execute(self, contracts):
         raise RuntimeError("provider unavailable")
 
 
@@ -75,7 +79,11 @@ class OrchestratorTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             store = Store(root / "db.sqlite")
-            scheduler = Scheduler(store, FailingRuntime(), root / "runs")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            scheduler = Scheduler(store, FailingRuntime(), registry)
             _, run_id = scheduler.submit(contracts())
             scheduler.queue.join()
             run = store.get_run(run_id)
@@ -89,7 +97,11 @@ class OrchestratorTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             store = Store(root / "db.sqlite")
-            scheduler = Scheduler(store, FakeRuntime(), root / "runs")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            scheduler = Scheduler(store, FakeRuntime(root / "runs"), registry)
             task_id, run_id = scheduler.submit(contracts())
             scheduler.queue.join()
             self.assertEqual("succeeded", store.get_task(task_id)["status"])
@@ -104,7 +116,11 @@ class OrchestratorTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             store = Store(root / "db.sqlite")
-            scheduler = Scheduler(store, FakeRuntime(), root / "runs")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            scheduler = Scheduler(store, FakeRuntime(root / "runs"), registry)
             httpd = server(scheduler, store, "127.0.0.1", 0)
             thread = threading.Thread(target=httpd.serve_forever, daemon=True)
             thread.start()

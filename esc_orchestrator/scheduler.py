@@ -7,16 +7,17 @@ from typing import Protocol, Any
 
 from esc_orchestrator.store import Store
 from esc_exec.checkpoints import checkpoint_document
+from esc_exec.registry import resolve_route
 from esc_exec.yaml_io import write_yaml
 
 
 class Runtime(Protocol):
-    def execute(self, contracts: dict[str, Any], output_root: Path) -> Path: ...
+    def execute(self, contracts: dict[str, Any]) -> Path: ...
 
 
 class Scheduler:
-    def __init__(self, store: Store, runtime: Runtime, output_root: Path):
-        self.store, self.runtime, self.output_root = store, runtime, output_root
+    def __init__(self, store: Store, runtime: Runtime, registry: Path):
+        self.store, self.runtime, self.registry = store, runtime, registry
         self.queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
         self.thread = threading.Thread(target=self._work, daemon=True)
         self.thread.start()
@@ -33,13 +34,15 @@ class Scheduler:
             task_id, run_id = item
             self.store.update_run(run_id, "running")
             try:
-                output = self.runtime.execute(self.store.contracts(task_id), self.output_root)
+                output = self.runtime.execute(self.store.contracts(task_id))
                 self.store.update_run(run_id, "succeeded", str(output))
             except Exception as exc:
                 error = str(exc)[:1000]
                 output_path = None
                 try:
-                    candidate_dir = self.output_root / run_id
+                    task = self.store.contracts(task_id)["task"]
+                    repository = resolve_route(self.registry, "repositories", task["task"]["repository"])
+                    candidate_dir = repository / ".esc-ai" / "runs" / run_id
                     document = checkpoint_document(
                         self.store.contracts(task_id)["task"],
                         run_id=run_id,
