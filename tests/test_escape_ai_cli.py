@@ -78,6 +78,36 @@ class RenderingTests(unittest.TestCase):
         self.assertIn("bad thing", rendered)
 
 
+class PlanningRenderingTests(unittest.TestCase):
+    """Pure rendering tests -- fake data only, never exercises real planning logic."""
+
+    def test_render_work_types_lists_all_five(self):
+        rendered = cli.render_work_types()
+        for i, work_type in enumerate(cli.WORK_TYPES, 1):
+            self.assertIn(f"{i}. {work_type}", rendered)
+
+    def test_render_plan_draft_shows_routing_and_question_count(self):
+        draft = {
+            "initiative_id": "feature-export", "work_type": "feature",
+            "objective": "Add CSV export.",
+            "repositories": ["repo-a", "repo-b"],
+            "routing": {"repo-a": [{"component_id": "content", "score": 8, "reasons": []}], "repo-b": []},
+            "questions": [{"field": "components", "repository": "repo-a", "prompt": "?"}],
+        }
+        rendered = cli.render_plan_draft(draft)
+        self.assertIn("feature-export", rendered)
+        self.assertIn("repo-a: suggested [content]", rendered)
+        self.assertIn("repo-b: suggested [no matches]", rendered)
+        self.assertIn("1 question(s) require your input", rendered)
+
+    def test_render_plan_result_lists_written_files_per_repository(self):
+        result = {"repo-a": [".esc-ai/workflows/active/task/task.yaml", ".esc-ai/workflows/active/task/README.md"]}
+        rendered = cli.render_plan_result(result)
+        self.assertIn("repo-a:", rendered)
+        self.assertIn("task.yaml", rendered)
+        self.assertIn("Nothing has been committed", rendered)
+
+
 class NonInteractiveDispatchTests(unittest.TestCase):
     """End-to-end: real analyze_repository/apply_onboarding_answers against a real repo."""
 
@@ -140,6 +170,114 @@ class NonInteractiveDispatchTests(unittest.TestCase):
                 code = cli.main(["--db", str(db), "--registry", str(registry), "repository", "apply", "repo"])
             self.assertEqual(2, code)
             self.assertIn("INCOMPLETE", buffer.getvalue())
+
+
+class PlanningDispatchTests(unittest.TestCase):
+    """End-to-end: real route_objective/generate_*_workflow against real repos."""
+
+    def _onboard(self, run, repo_id: str, repository_dir: Path, purpose: str) -> None:
+        code, _ = run(["repository", "add", repo_id, str(repository_dir)])
+        self.assertEqual(0, code)
+        code, _ = run(["repository", "analyze", repo_id, "--json"])
+        self.assertEqual(0, code)
+        answers_file = repository_dir.parent / f"{repo_id}-answers.json"
+        answers_file.write_text(json.dumps({"content": {"purpose": purpose}}), encoding="utf-8")
+        code, _ = run(["repository", "answer", repo_id, str(answers_file)])
+        self.assertEqual(0, code)
+        code, out = run(["repository", "apply", repo_id])
+        self.assertEqual(0, code, out)
+
+    def test_single_repository_plan_draft_answer_apply(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            self._onboard(run, "repo", repository_dir, "Owns content.")
+
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Add CSV export of content.",
+                "repositories": ["repo"],
+            }), encoding="utf-8")
+            code, out = run(["plan", "draft", "feature-export", str(request_file)])
+            self.assertEqual(0, code, out)
+            self.assertIn("feature-export", out)
+
+            answers_file = root / "plan-answers.json"
+            answers_file.write_text(json.dumps({
+                "components": {"repo": ["content"]},
+                "scope_boundary": "No admin UI.",
+                "completion_conditions": ["Export button works"],
+                "rollout_needs": "",
+            }), encoding="utf-8")
+            code, out = run(["plan", "answer", "feature-export", str(answers_file)])
+            self.assertEqual(0, code)
+            self.assertIn("STORED", out)
+
+            code, out = run(["plan", "apply", "feature-export"])
+            self.assertEqual(0, code, out)
+            self.assertIn("Planned.", out)
+            task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-export"
+            self.assertTrue((task_dir / "task.yaml").is_file())
+            self.assertTrue((task_dir / "README.md").is_file())
+            self.assertIn("Export button works", (task_dir / "README.md").read_text())
+
+            code, out = run(["plan", "status", "feature-export"])
+            self.assertEqual(0, code)
+            self.assertIn("has_result: True", out)
+
+    def test_multi_repository_plan_cross_links_tasks(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            registry = root / "registry.yaml"
+            repo_a = root / "repo-a"
+            repo_b = root / "repo-b"
+            _make_gradle_repository(repo_a)
+            _make_gradle_repository(repo_b)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            self._onboard(run, "repo-a", repo_a, "Owns repo-a content.")
+            self._onboard(run, "repo-b", repo_b, "Owns repo-b content.")
+
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Cross-repo export.",
+                "repositories": ["repo-a", "repo-b"],
+            }), encoding="utf-8")
+            code, out = run(["plan", "draft", "feature-cross", str(request_file)])
+            self.assertEqual(0, code, out)
+
+            answers_file = root / "plan-answers.json"
+            answers_file.write_text(json.dumps({
+                "components": {"repo-a": ["content"], "repo-b": ["content"]},
+                "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+            }), encoding="utf-8")
+            run(["plan", "answer", "feature-cross", str(answers_file)])
+
+            code, out = run(["plan", "apply", "feature-cross"])
+            self.assertEqual(0, code, out)
+
+            from esc_exec.yaml_io import load_yaml
+            task_a = load_yaml(repo_a / ".esc-ai/workflows/active/feature-cross-repo-a/task.yaml")
+            task_b = load_yaml(repo_b / ".esc-ai/workflows/active/feature-cross-repo-b/task.yaml")
+            self.assertEqual("feature-cross", task_a["task"]["initiative"]["id"])
+            self.assertNotIn("depends_on", task_a["task"]["initiative"])
+            self.assertEqual(["repo-a/feature-cross-repo-a"], task_b["task"]["initiative"]["depends_on"])
 
 
 class InteractiveOnboardingTests(unittest.TestCase):
@@ -227,6 +365,56 @@ class InteractiveOnboardingTests(unittest.TestCase):
             self.assertEqual(0, code)
             self.assertIn("resuming", buffer.getvalue())
             self.assertIn("already onboarded", buffer.getvalue())
+
+
+class PlanningInteractiveTests(unittest.TestCase):
+    def test_full_interactive_planning_writes_real_files(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(root / "db.sqlite"), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            run(["repository", "add", "repo", str(repository_dir)])
+            run(["repository", "analyze", "repo", "--json"])
+            answers_file = root / "answers.json"
+            answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+            run(["repository", "answer", "repo", str(answers_file)])
+            run(["repository", "apply", "repo"])
+
+            responses = iter([
+                "1",                     # work type: feature
+                "Add CSV export.",       # objective
+                "feature-export",        # initiative id
+                "repo",                  # repositories
+                "content",               # components question answer
+                "No admin UI.",          # scope_boundary
+                "Export works",          # completion_conditions
+                "",                      # rollout_needs
+                "y",                     # confirm
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_planning_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+
+            self.assertEqual(0, code)
+            output = buffer.getvalue()
+            self.assertIn("Planned.", output)
+            task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-export"
+            self.assertTrue((task_dir / "task.yaml").is_file())
+            self.assertIn("Export works", (task_dir / "README.md").read_text())
 
 
 if __name__ == "__main__":

@@ -33,9 +33,9 @@ it does not require the HTTP daemon to be running; it talks to the same `Store` 
 `esc_exec` onboarding logic in-process.
 
 ```bash
-escape-ai                      # interactive menu; only "Onboard a repository" is
-                                # implemented so far, the other five items say so
-                                # and exit cleanly rather than faking anything
+escape-ai                      # interactive menu; "Onboard a repository" and "Plan
+                                # new work" are implemented, the other four items say
+                                # so and exit cleanly rather than faking anything
 
 escape-ai repository add <id> <path>
 escape-ai repository analyze <id-or-path>       # read-only proposal, safe to re-run
@@ -43,14 +43,23 @@ escape-ai repository answer <id-or-path> <answers.json>   # stage answers
 escape-ai repository apply <id-or-path>         # the explicit write step
 escape-ai repository validate <id-or-path>
 escape-ai repository status <id-or-path>
+
+escape-ai plan draft <initiative-id> <request.json>       # {work_type, objective, repositories}
+escape-ai plan answer <initiative-id> <answers.json>      # stage answers
+escape-ai plan apply <initiative-id>                      # the explicit write step
+escape-ai plan status <initiative-id>
 ```
 
-`analyze`/`answer`/`apply` are deliberately separate steps: analysis never writes
-anything, staging an answer never writes anything, and `apply` is the one explicit
-approval boundary where manifests, indexes, verification/architecture profiles, and
-the thin `INSTRUCTIONS.md`/`.esc-ai/workflows/` pointer files actually get written.
-Nothing is ever committed automatically — both the interactive and non-interactive
-paths print exactly which files to review and commit yourself.
+`analyze`/`answer`/`apply` (and `plan draft`/`answer`/`apply`) are deliberately
+separate steps: analysis/drafting never writes anything, staging an answer never
+writes anything, and `apply` is the one explicit approval boundary where files
+actually get written — manifests, indexes, verification/architecture profiles, and
+`INSTRUCTIONS.md`/`.esc-ai/workflows/` for onboarding; `.esc-ai/workflows/active/<task-id>/task.yaml`
+and `README.md` for planning. A plan spanning more than one repository generates one
+cross-linked task per repository — each depends on the previous one in declared
+order — validating every repository/component reference before writing anything to
+any of them. Nothing is ever committed automatically — both the interactive and
+non-interactive paths print exactly which files to review and commit yourself.
 
 Re-running onboarding for a repository with unchanged inputs resumes from the stored
 proposal instead of re-analyzing from scratch.

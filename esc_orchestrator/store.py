@@ -27,6 +27,9 @@ class Store:
         CREATE TABLE IF NOT EXISTS onboarding_proposals(repository_id TEXT PRIMARY KEY, input_digest TEXT NOT NULL, proposal TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS onboarding_answers(repository_id TEXT PRIMARY KEY, answers TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS onboarding_pending_answers(repository_id TEXT PRIMARY KEY, answers TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS plan_drafts(initiative_id TEXT PRIMARY KEY, work_type TEXT NOT NULL, objective TEXT NOT NULL, repositories TEXT NOT NULL, routing TEXT NOT NULL, questions TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS plan_pending_answers(initiative_id TEXT PRIMARY KEY, answers TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS plan_results(initiative_id TEXT PRIMARY KEY, answers TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         """)
 
     def submit(self, contracts: dict[str, Any]) -> tuple[str, str]:
@@ -153,3 +156,67 @@ class Store:
         if not row:
             return None
         return {**dict(row), "answers": json.loads(row["answers"])}
+
+    def save_plan_draft(self, initiative_id: str, work_type: str, objective: str, repositories: list[str], routing: dict[str, Any], questions: list[dict[str, Any]]) -> None:
+        timestamp = now()
+        with self.lock, self.connection:
+            existing = self.connection.execute(
+                "SELECT created_at FROM plan_drafts WHERE initiative_id=?", (initiative_id,)
+            ).fetchone()
+            created_at = existing["created_at"] if existing else timestamp
+            self.connection.execute(
+                "INSERT INTO plan_drafts(initiative_id,work_type,objective,repositories,routing,questions,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(initiative_id) DO UPDATE SET work_type=excluded.work_type, objective=excluded.objective, "
+                "repositories=excluded.repositories, routing=excluded.routing, questions=excluded.questions, updated_at=excluded.updated_at",
+                (initiative_id, work_type, objective, json.dumps(repositories), json.dumps(routing), json.dumps(questions), created_at, timestamp),
+            )
+
+    def get_plan_draft(self, initiative_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute("SELECT * FROM plan_drafts WHERE initiative_id=?", (initiative_id,)).fetchone()
+        if not row:
+            return None
+        return {
+            **dict(row),
+            "repositories": json.loads(row["repositories"]),
+            "routing": json.loads(row["routing"]),
+            "questions": json.loads(row["questions"]),
+        }
+
+    def save_plan_pending_answers(self, initiative_id: str, answers: dict[str, Any]) -> None:
+        timestamp = now()
+        with self.lock, self.connection:
+            existing = self.connection.execute(
+                "SELECT created_at FROM plan_pending_answers WHERE initiative_id=?", (initiative_id,)
+            ).fetchone()
+            created_at = existing["created_at"] if existing else timestamp
+            self.connection.execute(
+                "INSERT INTO plan_pending_answers(initiative_id,answers,created_at,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(initiative_id) DO UPDATE SET answers=excluded.answers, updated_at=excluded.updated_at",
+                (initiative_id, json.dumps(answers), created_at, timestamp),
+            )
+
+    def get_plan_pending_answers(self, initiative_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute("SELECT * FROM plan_pending_answers WHERE initiative_id=?", (initiative_id,)).fetchone()
+        if not row:
+            return None
+        return {**dict(row), "answers": json.loads(row["answers"])}
+
+    def save_plan_result(self, initiative_id: str, answers: dict[str, Any], result: dict[str, Any]) -> None:
+        timestamp = now()
+        with self.lock, self.connection:
+            existing = self.connection.execute(
+                "SELECT created_at FROM plan_results WHERE initiative_id=?", (initiative_id,)
+            ).fetchone()
+            created_at = existing["created_at"] if existing else timestamp
+            self.connection.execute(
+                "INSERT INTO plan_results(initiative_id,answers,result,created_at,updated_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(initiative_id) DO UPDATE SET answers=excluded.answers, result=excluded.result, updated_at=excluded.updated_at",
+                (initiative_id, json.dumps(answers), json.dumps(result), created_at, timestamp),
+            )
+
+    def get_plan_result(self, initiative_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute("SELECT * FROM plan_results WHERE initiative_id=?", (initiative_id,)).fetchone()
+        if not row:
+            return None
+        return {**dict(row), "answers": json.loads(row["answers"]), "result": json.loads(row["result"])}
+

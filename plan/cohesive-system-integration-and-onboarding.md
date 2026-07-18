@@ -703,20 +703,47 @@ repositories, both non-interactively (`add`→`analyze`→`answer`→`apply`→`
 `status`) and interactively (scripted `input()` through the full menu → prompts →
 apply flow) — not just that the test suite passes.
 
-### Phase 7 — Feature/fix planning and workflow generation
+### Phase 7 — Feature/fix planning and workflow generation — **Complete** (typed-question scope)
 
-- Define initiative and linked task-graph contracts.
-- Add task-type selection and conversational product questions.
+- Define initiative and linked task-graph contracts. **Done** —
+  `schemas/initiative.schema.yaml` plus an optional `task.initiative` extension on
+  the task-specification schema, registered as an `initiative` contract kind.
+- Add task-type selection and conversational product questions. **Done** for
+  selection and typed questions; **not done** as a live conversation -- see below.
 - Build multi-turn planning conversation: the orchestrator mediates every turn to the
   configured runtime, re-checking the active policy's tool grant and re-scoping loaded
-  context each turn rather than once (see Planning conversation).
-- Route across registered repository indexes and architecture playbooks.
-- Generate reviewed single-repository workflow packages.
+  context each turn rather than once (see Planning conversation). **Deliberately not
+  built.** Still gated on the policy-to-tool-grant enforcement gap (flagged since
+  Phase 1, still open) -- building a "bounded conversation" with no real enforcement
+  behind it would be the same false-safety problem this project avoids elsewhere.
+  `esc_exec.planning.planning_questions` is the typed-question substitute: the same
+  bounded, non-conversational pattern onboarding already proved out, answering
+  exactly what the plan says can't be derived (component selection, scope boundary,
+  completion conditions, rollout needs) without requiring a live AI conversation to
+  turn an objective into a task graph. Upgrading this to a real mediated conversation
+  remains future work, gated on the enforcement fix landing.
+- Route across registered repository indexes and architecture playbooks. **Done** for
+  indexes (`route_objective` reuses the existing keyword-routing index lookup);
+  architecture playbook routing beyond a component's own `architecture.profile_ids`
+  is not yet a separate step.
+- Generate reviewed single-repository workflow packages. **Done** —
+  `generate_single_repository_workflow` validates every referenced component
+  against the repository's own index before writing `task.yaml`/`README.md`.
 - Generate linked multi-repository workflows with ordering and handoff contracts.
-- Validate all referenced repository/framework IDs before writing.
+  **Done** — `generate_multi_repository_workflow` chains each repository's task to
+  the previous one in declared order (the plan's own contracts → backend → mobile
+  example is exactly this linear shape), referencing other tasks by stable
+  repository/task ID, never an absolute path.
+- Validate all referenced repository/framework IDs before writing. **Done** — every
+  repository ID, task ID, component reference, and `depends_on` cross-reference is
+  validated before a single file is written to any repository; a bad reference in
+  one repository blocks writes to every repository in the initiative, not just the
+  bad one.
 
 **Exit:** an approved feature or fix produces complete, independently resumable
-workflows in every participating repository.
+workflows in every participating repository. Verified end to end via the real
+`escape-ai plan draft/answer/apply` chain for both a single-repository and a
+two-repository initiative (see each repo's Phase 7 tracking doc for the specifics).
 
 ### Phase 8 — Integrated execution lifecycle
 
@@ -798,33 +825,34 @@ CLI/API.
 
 ## Recommended next task
 
-Phases 0 through 6 are all complete — see each phase's entry in Implementation
-sequence for what shipped and what's honestly still open within each (Phase 4's
-new-project planning-conversation reuse depends on Phase 7; Phase 5's migration-diff
-handling for a repository with pre-existing content is deferred pending Phase 10
-evidence; Phase 6 noted but did not fix a pre-existing index/dependency-graph
-staleness gap in `apply_onboarding_answers` — see that phase's archived tracking doc).
-`ampm-backend` migration was intentionally left out of this work; it belongs to
-Phase 10's pilot validation against a repository that is a good fit by the Who this
-is for definition, so it's still open but not blocking.
+Phases 0 through 7 are all complete — see each phase's entry in Implementation
+sequence for what shipped and what's honestly still open within each (Phase 5's
+migration-diff handling for a repository with pre-existing content is deferred
+pending Phase 10 evidence; Phase 6's index/dependency-graph staleness gap in
+`apply_onboarding_answers` was found and fixed shortly after that phase landed;
+Phase 7 built the typed-question substitute for planning, not the live conversation,
+which stays gated on the policy-to-tool-grant enforcement gap). `ampm-backend`
+migration was intentionally left out of this work; it belongs to Phase 10's pilot
+validation against a repository that is a good fit by the Who this is for
+definition, so it's still open but not blocking.
 
-A user can now onboard a real, representative new repository end to end through one
-command — `escape-ai` — from path to approved, commit-ready files. That closes out
-the onboarding half of the plan (Phases 0-6); everything from here is about planning
-and executing *work* on an already-onboarded repository, not onboarding itself.
+A user can now take an objective and a repository selection all the way to approved,
+independently resumable workflow files — `escape-ai plan draft/answer/apply` — for
+both single- and multi-repository initiatives. That closes out onboarding and
+planning (Phases 0-7); everything from here is about *executing* an approved task
+graph, not producing one.
 
-Next: **Phase 7 — Feature/fix planning and workflow generation**.
+Next: **Phase 8 — Integrated execution lifecycle**.
 
-1. Define initiative and linked task-graph contracts.
-2. Add task-type selection and conversational product questions.
-3. Build the multi-turn planning conversation described in Planning conversation:
-   the orchestrator mediates every turn to the configured runtime, re-checking the
-   active policy's tool grant and re-scoping loaded context each turn rather than
-   once. Note this depends on the policy-to-tool-grant enforcement gap (flagged
-   since Phase 1, still open) actually mattering here — a planning conversation
-   with no real tool-grant enforcement behind it is not the bounded conversation
-   the plan describes.
-4. Route across registered repository indexes and architecture playbooks.
-5. Generate reviewed single-repository workflow packages.
-6. Generate linked multi-repository workflows with ordering and handoff contracts.
-7. Validate all referenced repository/framework IDs before writing.
+1. Connect approved task graphs to scheduler runs.
+2. Resolve architecture instructions into bounded task context.
+3. Add approval gates, retry/attempt semantics, and checkpoint promotion.
+4. Provide active-work/resume views across repositories.
+5. Retain metrics for onboarding, planning, execution, and rework.
+
+This phase is where the policy-to-tool-grant enforcement gap (flagged since Phase 1,
+carried forward through Phases 6 and 7) stops being deferrable: execution is the
+first point where a run can actually mutate a repository, so approval gates without
+real tool-grant enforcement behind them would be exactly the false-safety problem
+this plan has been careful to avoid naming and not building around. Close that gap
+before or alongside this phase, not after it.
