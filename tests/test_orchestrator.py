@@ -116,6 +116,44 @@ class OrchestratorTests(unittest.TestCase):
             httpd.server_close()
             thread.join()
 
+    def test_repository_answers_endpoint(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            add_route(registry, "repositories", "repo", repository_dir)
+            httpd = server(None, store, "127.0.0.1", 0, registry)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{httpd.server_port}"
+            try:
+                answers_before_analyze = json.dumps({"content": {"purpose": "Owns content."}}).encode()
+                try:
+                    urlopen(Request(base + "/repositories/repo/answers", method="POST", data=answers_before_analyze))
+                    self.fail("expected HTTPError")
+                except Exception as exc:
+                    self.assertEqual(404, exc.code)
+
+                urlopen(Request(base + "/repositories/repo/analyze", method="POST", data=b""))
+
+                answers = json.dumps({"content": {"purpose": "Owns content."}}).encode()
+                result = json.loads(
+                    urlopen(Request(base + "/repositories/repo/answers", method="POST", data=answers)).read()
+                )
+                self.assertIn("esc-execution.yaml", result["written"])
+                manifest_path = repository_dir / "content" / "esc-component.yaml"
+                self.assertTrue(manifest_path.is_file())
+                self.assertIn("Owns content.", manifest_path.read_text(encoding="utf-8"))
+
+                fetched = json.loads(urlopen(base + "/repositories/repo/answers").read())
+                self.assertEqual(result["written"], fetched["written"])
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join()
+
     def test_analyze_unregistered_repository_returns_404(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)

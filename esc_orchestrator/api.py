@@ -4,7 +4,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from esc_exec.onboarding import analyze_repository
+from esc_exec.onboarding import analyze_repository, apply_onboarding_answers
 from esc_exec.registry import resolve_route
 
 
@@ -27,6 +27,9 @@ def server(scheduler, store, host: str, port: int, registry: Path):
             elif len(parts) == 3 and parts[0] == "repositories" and parts[2] == "proposal":
                 record = store.get_onboarding_proposal(parts[1])
                 value = record["proposal"] if record else None
+            elif len(parts) == 3 and parts[0] == "repositories" and parts[2] == "answers":
+                record = store.get_onboarding_answers(parts[1])
+                value = record["result"] if record else None
             else: return self.send(404, {"error": "not found"})
             return self.send(200 if value else 404, value or {"error": "not found"})
         def do_POST(self):
@@ -38,11 +41,27 @@ def server(scheduler, store, host: str, port: int, registry: Path):
                 except (KeyError, FileNotFoundError) as exc:
                     return self.send(404, {"error": str(exc)})
                 try:
-                    proposal = analyze_repository(repository_path)
+                    proposal = analyze_repository(repository_path, registry)
                 except (OSError, ValueError) as exc:
                     return self.send(400, {"error": str(exc)})
                 store.save_onboarding_proposal(repository_id, proposal)
                 return self.send(200, proposal)
+            if len(parts) == 3 and parts[0] == "repositories" and parts[2] == "answers":
+                repository_id = parts[1]
+                try:
+                    repository_path = resolve_route(registry, "repositories", repository_id)
+                except (KeyError, FileNotFoundError) as exc:
+                    return self.send(404, {"error": str(exc)})
+                record = store.get_onboarding_proposal(repository_id)
+                if record is None:
+                    return self.send(404, {"error": f"no onboarding proposal for `{repository_id}`; analyze first"})
+                try:
+                    answers = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                    result = apply_onboarding_answers(repository_path, record["proposal"], answers, registry)
+                except (OSError, ValueError) as exc:
+                    return self.send(400, {"error": str(exc)})
+                store.save_onboarding_answers(repository_id, answers, result)
+                return self.send(200, result)
             if self.path != "/tasks": return self.send(404, {"error": "not found"})
             try:
                 value = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))

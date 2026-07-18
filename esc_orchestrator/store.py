@@ -25,6 +25,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, task_id TEXT NOT NULL, status TEXT NOT NULL, output_path TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, sequence INTEGER NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS onboarding_proposals(repository_id TEXT PRIMARY KEY, input_digest TEXT NOT NULL, proposal TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS onboarding_answers(repository_id TEXT PRIMARY KEY, answers TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         """)
 
     def submit(self, contracts: dict[str, Any]) -> tuple[str, str]:
@@ -104,3 +105,24 @@ class Store:
         if not row:
             return None
         return {**dict(row), "proposal": json.loads(row["proposal"])}
+
+    def save_onboarding_answers(self, repository_id: str, answers: dict[str, Any], result: dict[str, Any]) -> None:
+        timestamp = now()
+        with self.lock, self.connection:
+            existing = self.connection.execute(
+                "SELECT created_at FROM onboarding_answers WHERE repository_id=?", (repository_id,)
+            ).fetchone()
+            created_at = existing["created_at"] if existing else timestamp
+            self.connection.execute(
+                "INSERT INTO onboarding_answers(repository_id,answers,result,created_at,updated_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(repository_id) DO UPDATE SET answers=excluded.answers, result=excluded.result, updated_at=excluded.updated_at",
+                (repository_id, json.dumps(answers), json.dumps(result), created_at, timestamp),
+            )
+
+    def get_onboarding_answers(self, repository_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM onboarding_answers WHERE repository_id=?", (repository_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return {**dict(row), "answers": json.loads(row["answers"]), "result": json.loads(row["result"])}

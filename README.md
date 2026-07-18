@@ -46,6 +46,11 @@ Endpoints:
   repository ID isn't registered
 - `GET /repositories/{id}/proposal` — return the latest persisted onboarding proposal
   for a repository; 404 if none has been generated yet
+- `POST /repositories/{id}/answers` — apply human answers to the latest analyzed
+  proposal, writing manifests for the first time (analysis itself stays read-only);
+  404 if no proposal has been generated yet for that repository
+- `GET /repositories/{id}/answers` — return the result of the latest applied answers
+  for a repository; 404 if none have been applied yet
 
 Failure candidates remain transient until reviewed. Promote durable handoff state into
 the consuming repository with `esc-exec checkpoint create` or `checkpoint update`, then
