@@ -58,13 +58,18 @@ two separate real temp Gradle repositories:
 - Interactively via piped `input()`: menu → path prompt → proposal render → purpose
   question → apply confirmation → same files written, confirmed on disk.
 
-## Noted, not fixed (out of scope for this phase)
+## Fixed after this phase landed
 
-`repository validate` on a freshly-onboarded repository reports `esc-index.json` as
-`STALE` and `esc-dependencies.json` as `INCOMPLETE`. This traces to
-`apply_onboarding_answers` (esc-ai-execution-framework, Phase 4/5): it generates
-indexes *before* generating the verification/architecture profiles that then get
-added to each component's manifest, so the index is stale relative to the manifest's
-final state the moment it's written, and the dependency graph is never generated at
-all during apply. Not something to fix in this CLI-wrapping phase — flagging for
-whoever next touches `apply_onboarding_answers`.
+`repository validate` on a freshly-onboarded repository reported `esc-index.json` as
+`STALE` and `esc-dependencies.json` as `INCOMPLETE`. Traced to
+`apply_onboarding_answers` (esc-ai-execution-framework) generating indexes *before*
+generating the verification/architecture profiles that then get added to each
+component's manifest, leaving the index stale the instant it's written; the
+dependency graph was never generated at all during apply. Fixed in
+esc-ai-execution-framework commit `dc94602`: the index is now regenerated a second
+time after the profile generators finish mutating manifests (both generators resolve
+a component's manifest path through the index, so it can't simply move to the end —
+it has to exist early too), and the dependency graph is generated once, after
+manifests are final. Re-verified end-to-end via this same `escape-ai` CLI: both
+`esc-index.json` and `esc-dependencies.json` now report `VALID` immediately after
+`apply`.
