@@ -674,17 +674,34 @@ existing repository receives a reviewed migration diff. First half holds; the
 "reviewed migration diff" for a repository with existing content is the
 future-work item noted above, not yet built.
 
-### Phase 6 — Interactive CLI onboarding wizard
+### Phase 6 — Interactive CLI onboarding wizard — **Complete**
 
 - Add the `escape-ai` top-level interactive menu and Escape AI product branding.
-- Render onboarding state-machine questions and proposals.
+  **Done** — new `escape-ai` command, self-contained (no HTTP daemon required),
+  separate from `esc-orchestrator`. Only "Onboard a repository" is functional; the
+  other five items say so honestly and exit cleanly rather than faking behavior —
+  they're later phases.
+- Render onboarding state-machine questions and proposals. **Done** — pure rendering
+  functions over plain data, tested independently of the real onboarding logic they
+  render.
 - Add non-interactive equivalents: `repository add`, `analyze`, `answer`, `apply`,
-  `validate`, and `status`.
-- Add cancellation, resumption, and dry-run behavior.
-- Test terminal output separately from onboarding business logic.
+  `validate`, and `status`. **Done** — `answer` stages answers without writing;
+  `apply` is the one deliberate write step, genuinely separate actions, not the same
+  one under two names.
+- Add cancellation, resumption, and dry-run behavior. **Done** — Ctrl-C/EOF at any
+  prompt exits cleanly with nothing written; re-onboarding with an unchanged input
+  digest detects the existing proposal and, if already applied, asks before
+  redoing it; analysis and proposal viewing are unambiguously previews ("Nothing
+  has been committed" prints after every apply).
+- Test terminal output separately from onboarding business logic. **Done** — the
+  business logic was already decoupled from Phase 3/4/5's work; this phase only
+  needed wizard-layer tests, not a refactor.
 
 **Exit:** a user can onboard a representative new repository from path to approved,
-commit-ready files through one interface.
+commit-ready files through one interface. Verified against two real temp Gradle
+repositories, both non-interactively (`add`→`analyze`→`answer`→`apply`→`validate`→
+`status`) and interactively (scripted `input()` through the full menu → prompts →
+apply flow) — not just that the test suite passes.
 
 ### Phase 7 — Feature/fix planning and workflow generation
 
@@ -781,31 +798,33 @@ CLI/API.
 
 ## Recommended next task
 
-Phases 0 through 5 are all complete — see each phase's entry in Implementation
+Phases 0 through 6 are all complete — see each phase's entry in Implementation
 sequence for what shipped and what's honestly still open within each (Phase 4's
 new-project planning-conversation reuse depends on Phase 7; Phase 5's migration-diff
 handling for a repository with pre-existing content is deferred pending Phase 10
-evidence). `ampm-backend` migration was intentionally left out of this work; it
-belongs to Phase 10's pilot validation against a repository that is a good fit by the
-Who this is for definition, so it's still open but not blocking.
+evidence; Phase 6 noted but did not fix a pre-existing index/dependency-graph
+staleness gap in `apply_onboarding_answers` — see that phase's archived tracking doc).
+`ampm-backend` migration was intentionally left out of this work; it belongs to
+Phase 10's pilot validation against a repository that is a good fit by the Who this
+is for definition, so it's still open but not blocking.
 
-The composition protocol (Phases 0-5: naming, framework composition, the machine-local
-catalog, read-only analysis, human-assisted construction, workflow bootstrap) is now
-stable enough to build the interactive wizard on top of without it immediately needing
-migration.
+A user can now onboard a real, representative new repository end to end through one
+command — `escape-ai` — from path to approved, commit-ready files. That closes out
+the onboarding half of the plan (Phases 0-6); everything from here is about planning
+and executing *work* on an already-onboarded repository, not onboarding itself.
 
-Next: **Phase 6 — Interactive CLI onboarding wizard**.
+Next: **Phase 7 — Feature/fix planning and workflow generation**.
 
-1. Add the `escape-ai` top-level interactive menu and Escape AI product branding (see
-   Unified CLI and interface for the locked-in six-item menu).
-2. Render onboarding state-machine questions and proposals — the existing
-   `analyze`/`answer` engine already produces everything a wizard needs to render;
-   this phase is the rendering/interaction layer, not new analysis logic.
-3. Add non-interactive equivalents: `repository add`, `analyze`, `answer`, `apply`,
-   `validate`, and `status` (`analyze`/`answer` already exist as `esc-exec repository
-   analyze`/`answer`; this phase adds the rest and unifies them under `escape-ai`).
-4. Add cancellation, resumption, and dry-run behavior.
-5. Test terminal output separately from onboarding business logic — the business
-   logic (`analyze_repository`/`apply_onboarding_answers`) is already fully
-   independent of any terminal rendering, so this should mean writing wizard-layer
-   tests, not refactoring existing logic to decouple it.
+1. Define initiative and linked task-graph contracts.
+2. Add task-type selection and conversational product questions.
+3. Build the multi-turn planning conversation described in Planning conversation:
+   the orchestrator mediates every turn to the configured runtime, re-checking the
+   active policy's tool grant and re-scoping loaded context each turn rather than
+   once. Note this depends on the policy-to-tool-grant enforcement gap (flagged
+   since Phase 1, still open) actually mattering here — a planning conversation
+   with no real tool-grant enforcement behind it is not the bounded conversation
+   the plan describes.
+4. Route across registered repository indexes and architecture playbooks.
+5. Generate reviewed single-repository workflow packages.
+6. Generate linked multi-repository workflows with ordering and handoff contracts.
+7. Validate all referenced repository/framework IDs before writing.
