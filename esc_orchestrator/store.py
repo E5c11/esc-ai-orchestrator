@@ -26,6 +26,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, sequence INTEGER NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS onboarding_proposals(repository_id TEXT PRIMARY KEY, input_digest TEXT NOT NULL, proposal TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS onboarding_answers(repository_id TEXT PRIMARY KEY, answers TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS onboarding_pending_answers(repository_id TEXT PRIMARY KEY, answers TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         """)
 
     def submit(self, contracts: dict[str, Any]) -> tuple[str, str]:
@@ -126,3 +127,29 @@ class Store:
         if not row:
             return None
         return {**dict(row), "answers": json.loads(row["answers"]), "result": json.loads(row["result"])}
+
+    def save_pending_answers(self, repository_id: str, answers: dict[str, Any]) -> None:
+        """
+        Stage answers without applying them -- the explicit answer/apply approval
+        boundary the CLI's `repository answer`/`repository apply` subcommands need.
+        Distinct from save_onboarding_answers, which records an already-applied result.
+        """
+        timestamp = now()
+        with self.lock, self.connection:
+            existing = self.connection.execute(
+                "SELECT created_at FROM onboarding_pending_answers WHERE repository_id=?", (repository_id,)
+            ).fetchone()
+            created_at = existing["created_at"] if existing else timestamp
+            self.connection.execute(
+                "INSERT INTO onboarding_pending_answers(repository_id,answers,created_at,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(repository_id) DO UPDATE SET answers=excluded.answers, updated_at=excluded.updated_at",
+                (repository_id, json.dumps(answers), created_at, timestamp),
+            )
+
+    def get_pending_answers(self, repository_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM onboarding_pending_answers WHERE repository_id=?", (repository_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return {**dict(row), "answers": json.loads(row["answers"])}

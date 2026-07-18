@@ -11,6 +11,7 @@ dependencies = ["esc-ai-execution-framework>=0.1.0"]
 
 [project.scripts]
 esc-orchestrator = "esc_orchestrator.cli:main"
+escape-ai = "esc_orchestrator.escape_ai_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["esc_orchestrator*"]

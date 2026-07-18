@@ -26,6 +26,35 @@ Install both sibling repositories in editable mode, then:
 esc-orchestrator --port 8042 --opencode http://127.0.0.1:4097
 ```
 
+## `escape-ai` — the user-facing CLI
+
+`escape-ai` is a separate, self-contained entry point from `esc-orchestrator` above —
+it does not require the HTTP daemon to be running; it talks to the same `Store` and
+`esc_exec` onboarding logic in-process.
+
+```bash
+escape-ai                      # interactive menu; only "Onboard a repository" is
+                                # implemented so far, the other five items say so
+                                # and exit cleanly rather than faking anything
+
+escape-ai repository add <id> <path>
+escape-ai repository analyze <id-or-path>       # read-only proposal, safe to re-run
+escape-ai repository answer <id-or-path> <answers.json>   # stage answers
+escape-ai repository apply <id-or-path>         # the explicit write step
+escape-ai repository validate <id-or-path>
+escape-ai repository status <id-or-path>
+```
+
+`analyze`/`answer`/`apply` are deliberately separate steps: analysis never writes
+anything, staging an answer never writes anything, and `apply` is the one explicit
+approval boundary where manifests, indexes, verification/architecture profiles, and
+the thin `INSTRUCTIONS.md`/`.esc-ai/workflows/` pointer files actually get written.
+Nothing is ever committed automatically — both the interactive and non-interactive
+paths print exactly which files to review and commit yourself.
+
+Re-running onboarding for a repository with unchanged inputs resumes from the stored
+proposal instead of re-analyzing from scratch.
+
 Endpoints:
 
 - `GET /health`
