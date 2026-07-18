@@ -219,12 +219,34 @@ What would you like to do?
   2. Plan new work
   3. Resume active work
   4. Observe a run
-  5. Validate the system
+  5. Configure system
+  6. Validate the system
 ```
 
 The first interface can be a terminal wizard. A web or JetBrains UI should consume the
 same orchestrator API and state machine later; business logic must not live in prompts
 or terminal rendering.
+
+Only **Onboard a repository** and **Plan new work** are multi-step negotiated proposals
+that can be interrupted mid-negotiation and resumed later — they get the full typed
+state-machine treatment (see API/state-machine boundaries). **Resume active work**,
+**Observe a run**, **Configure system**, and **Validate the system** are simpler
+direct-action flows — list, select, act — with no pending-question state to track, and
+do not need their own state machine.
+
+**Configure system** is the front door for machine-local, not per-repository, setup:
+
+- providers/runtimes — adapter, model, endpoint;
+- repositories and ecosystems — register, remove, group;
+- permission policies — author or select a named `policy.yaml` profile;
+- credentials — a pointer to the environment or credential provider, never a value
+  entered or stored inline.
+
+Policies configured here become the default applied when planning or executing a task;
+a task may still override its policy explicitly. This is also the mechanism that must
+exist before the policy-to-tool-grant enforcement gap (see Open follow-up in the Phase 1
+workflow tracking docs) is closed — a policy a user configures here has to actually
+change what an execution run is permitted to do.
 
 ## Repository onboarding flow
 
@@ -371,6 +393,16 @@ The orchestrator:
    conditions that cannot be derived.
 7. Produces a proposed initiative and task graph before writing workflows.
 
+Step 6 (`planning.awaiting-product-input`) is where the interaction stops being a fixed
+menu and becomes free-form conversation — but it is conversation with the *configured
+runtime*, not a raw, unmediated chat window onto whichever AI provider happens to be
+behind it. By this point the orchestrator has already loaded the repository's indexes,
+matched architecture profiles, and workflow policy; the conversation happens inside that
+loaded context, and — like any other run — is itself observable and logged as portable
+events. An unbounded chat pane would be exactly the unchecked-autonomy pattern Escape AI
+positions against; the boundary is what makes this step safe to hand to the user
+directly instead of over-constraining it with more menu levels.
+
 ### Single-repository output
 
 Create:
@@ -433,6 +465,10 @@ Starting `escape-ai` later should show active tasks and checkpoints across regis
 repositories, allowing the user to resume without reconstructing context.
 
 ## API/state-machine boundaries
+
+Only onboarding and planning are typed state machines — they are negotiated proposals
+that can be interrupted and resumed. Resume/Observe/Configure/Validate (see Unified CLI
+and interface) are direct-action flows and do not get their own state machine.
 
 Interactive questions must be driven by typed states so any interface can render them:
 
