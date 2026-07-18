@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from esc_exec.onboarding import analyze_repository
+from esc_exec.registry import resolve_route
 
 
-def server(scheduler, store, host: str, port: int):
+def server(scheduler, store, host: str, port: int, registry: Path):
     class Handler(BaseHTTPRequestHandler):
         def send(self, status, value):
             body = json.dumps(value).encode()
@@ -20,9 +24,25 @@ def server(scheduler, store, host: str, port: int):
             elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "verification-plan": value = store.output_document(parts[1], "verification-plan.json")
             elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "checkpoint": value = store.output_yaml(parts[1], "checkpoint.yaml")
             elif len(parts) == 3 and parts[0] == "runs" and parts[2] == "metrics": value = store.output_document(parts[1], "run-metrics.json")
+            elif len(parts) == 3 and parts[0] == "repositories" and parts[2] == "proposal":
+                record = store.get_onboarding_proposal(parts[1])
+                value = record["proposal"] if record else None
             else: return self.send(404, {"error": "not found"})
             return self.send(200 if value else 404, value or {"error": "not found"})
         def do_POST(self):
+            parts = self.path.strip("/").split("/")
+            if len(parts) == 3 and parts[0] == "repositories" and parts[2] == "analyze":
+                repository_id = parts[1]
+                try:
+                    repository_path = resolve_route(registry, "repositories", repository_id)
+                except (KeyError, FileNotFoundError) as exc:
+                    return self.send(404, {"error": str(exc)})
+                try:
+                    proposal = analyze_repository(repository_path)
+                except (OSError, ValueError) as exc:
+                    return self.send(400, {"error": str(exc)})
+                store.save_onboarding_proposal(repository_id, proposal)
+                return self.send(200, proposal)
             if self.path != "/tasks": return self.send(404, {"error": "not found"})
             try:
                 value = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))

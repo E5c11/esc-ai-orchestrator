@@ -41,6 +41,11 @@ Endpoints:
 - `GET /runs/{id}/checkpoint` — return a checkpoint candidate retained after a failed run
 - `GET /runs/{id}/metrics` — return provider-reported tokens and measured execution,
   context, tool-call, and rework dimensions when the runtime emitted them
+- `POST /repositories/{id}/analyze` — run the read-only onboarding analysis engine
+  against a registered repository and persist the resulting proposal; 404 if the
+  repository ID isn't registered
+- `GET /repositories/{id}/proposal` — return the latest persisted onboarding proposal
+  for a repository; 404 if none has been generated yet
 
 Failure candidates remain transient until reviewed. Promote durable handoff state into
 the consuming repository with `esc-exec checkpoint create` or `checkpoint update`, then

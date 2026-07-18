@@ -74,7 +74,66 @@ def contracts():
     }
 
 
+def _make_gradle_repository(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "settings.gradle.kts").write_text(
+        'rootProject.name = "repo"\ninclude(":content")\n', encoding="utf-8",
+    )
+    (root / "content/src/main/kotlin").mkdir(parents=True)
+    (root / "content/build.gradle.kts").write_text("", encoding="utf-8")
+
+
 class OrchestratorTests(unittest.TestCase):
+    def test_repository_analyze_and_proposal_endpoints(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            add_route(registry, "repositories", "repo", repository_dir)
+            httpd = server(None, store, "127.0.0.1", 0, registry)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{httpd.server_port}"
+            try:
+                urlopen(Request(base + "/repositories/repo/proposal"))
+                self.fail("expected HTTPError")
+            except Exception as exc:
+                self.assertEqual(404, exc.code)
+
+            first = json.loads(urlopen(Request(base + "/repositories/repo/analyze", method="POST", data=b"")).read())
+            self.assertEqual("repo", first["repository"]["id"])
+            self.assertEqual("create", next(entry["action"] for entry in first["files"] if entry["path"] == "esc-execution.yaml"))
+
+            fetched = json.loads(urlopen(base + "/repositories/repo/proposal").read())
+            self.assertEqual(first["input_digest"], fetched["input_digest"])
+
+            second = json.loads(urlopen(Request(base + "/repositories/repo/analyze", method="POST", data=b"")).read())
+            self.assertEqual(first["input_digest"], second["input_digest"])
+
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join()
+
+    def test_analyze_unregistered_repository_returns_404(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            httpd = server(None, store, "127.0.0.1", 0, registry)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{httpd.server_port}"
+            try:
+                urlopen(Request(base + "/repositories/unknown/analyze", method="POST", data=b""))
+                self.fail("expected HTTPError")
+            except Exception as exc:
+                self.assertEqual(404, exc.code)
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join()
+
     def test_failed_run_retains_checkpoint_candidate(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -121,7 +180,7 @@ class OrchestratorTests(unittest.TestCase):
             repository_dir.mkdir()
             add_route(registry, "repositories", "repo", repository_dir)
             scheduler = Scheduler(store, FakeRuntime(root / "runs"), registry)
-            httpd = server(scheduler, store, "127.0.0.1", 0)
+            httpd = server(scheduler, store, "127.0.0.1", 0, registry)
             thread = threading.Thread(target=httpd.serve_forever, daemon=True)
             thread.start()
             base = f"http://127.0.0.1:{httpd.server_port}"

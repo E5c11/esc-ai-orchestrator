@@ -24,6 +24,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, status TEXT NOT NULL, contracts TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, task_id TEXT NOT NULL, status TEXT NOT NULL, output_path TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, sequence INTEGER NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS onboarding_proposals(repository_id TEXT PRIMARY KEY, input_digest TEXT NOT NULL, proposal TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         """)
 
     def submit(self, contracts: dict[str, Any]) -> tuple[str, str]:
@@ -82,3 +83,24 @@ class Store:
 
     def contracts(self, task_id: str) -> dict[str, Any]:
         return json.loads(self.connection.execute("SELECT contracts FROM tasks WHERE id=?", (task_id,)).fetchone()[0])
+
+    def save_onboarding_proposal(self, repository_id: str, proposal: dict[str, Any]) -> None:
+        timestamp = now()
+        with self.lock, self.connection:
+            existing = self.connection.execute(
+                "SELECT created_at FROM onboarding_proposals WHERE repository_id=?", (repository_id,)
+            ).fetchone()
+            created_at = existing["created_at"] if existing else timestamp
+            self.connection.execute(
+                "INSERT INTO onboarding_proposals(repository_id,input_digest,proposal,created_at,updated_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(repository_id) DO UPDATE SET input_digest=excluded.input_digest, proposal=excluded.proposal, updated_at=excluded.updated_at",
+                (repository_id, proposal["input_digest"], json.dumps(proposal), created_at, timestamp),
+            )
+
+    def get_onboarding_proposal(self, repository_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM onboarding_proposals WHERE repository_id=?", (repository_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return {**dict(row), "proposal": json.loads(row["proposal"])}
