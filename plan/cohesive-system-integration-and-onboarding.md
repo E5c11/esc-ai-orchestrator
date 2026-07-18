@@ -531,24 +531,34 @@ with unchanged inputs must be safe and byte-identical.
 **Exit:** every repository refers to the canonical IDs and all existing validation
 suites pass.
 
-### Phase 1 — Framework composition protocol
+### Phase 1 — Framework composition protocol — **Complete**
 
 - Introduce `.esc-ai/` as the repository-local Escape AI directory; move `workflows/`
   to `.esc-ai/workflows/` in all three existing repositories and every reference to it.
+  **Done.**
 - Resolve per-task `.esc-ai/runs/<run-id>/` output from the task's target repository
-  instead of a single orchestrator-process-relative output root.
-- Add `ecosystems:` grouping to the machine-local catalog schema and registry.
+  instead of a single orchestrator-process-relative output root. **Done.**
+- Add `ecosystems:` grouping to the machine-local catalog schema and registry. **Done.**
 - Define a versioned framework descriptor for architecture and execution frameworks.
+  **Done** — `esc-framework.yaml` + compatible-major-version checking.
 - Extend repository/component manifests with framework versions, architecture
   selectors, extensions, workflow location, and derived-artifact declarations.
-- Define instruction resolution and conflict reporting.
-- Implement route resolution and compatibility validation for both frameworks.
+  **Done** for architecture selectors (`architecture: {profile_ids: [...]}`); project
+  extensions and derived-artifact declarations remain open for later phases.
+- Define instruction resolution and conflict reporting. **Done** as a thin slice — the
+  6-level precedence order and the one named conflict case (reserved document-ID
+  prefixes); not yet wired into a live task context, since the other instruction
+  sources aren't structured data until planning/execution (Phase 7/8) produce them.
+- Implement route resolution and compatibility validation for both frameworks. **Done.**
 - Implement architecture profile/index lookup as a library callable by the
-  orchestrator.
+  orchestrator. **Done** — `esc_exec/architecture_lookup.py`, consuming the
+  architecture framework's `index.json` as a data contract, no code dependency.
 
 **Exit:** a task context identifies the exact execution and architecture documents to
 load without hard-coded checkout paths, and per-run artifacts land inside the target
 repository's `.esc-ai/` directory rather than the orchestrator's own working directory.
+Both conditions hold: `build_task_context` resolves each component's declared
+architecture documents, and run artifacts resolve to `<repository>/.esc-ai/runs/`.
 
 ### Phase 2 — Unified machine-local catalog
 
@@ -693,18 +703,21 @@ CLI/API.
 
 ## Recommended next task
 
-Start with **Phase 0 and Phase 1 together as a bounded design/migration slice**:
+Phase 0 and Phase 1 (the bounded design/migration slice originally recommended here)
+are both complete — see each phase's entry in Implementation sequence for what
+shipped. `ampm-backend` migration was intentionally left out of that slice; it belongs
+to Phase 10's pilot validation, not Phase 0/1's composition protocol, so it's still
+open but not blocking.
 
-1. Complete the architecture framework's internal title and reference migration.
-   **Done.**
-2. Add a migration diagnostic for the renamed framework ID. **Done.**
-3. Introduce `.esc-ai/` as the repository-local Escape AI directory (move
-   `workflows/` into it, add `runs/`), and resolve per-task run output from the
-   target repository instead of the orchestrator process's own working directory.
-4. Add `ecosystems:` grouping to the machine-local catalog.
-5. Define the framework descriptor and shared manifest extensions.
-6. Implement composed framework resolution for one read-only task.
-7. Migrate `ampm-backend` references and validate all three repositories.
+Next: **Phase 2 — Unified machine-local catalog**.
+
+1. Define `system.yaml` schema and migration from `repositories.yaml`, deciding whether
+   it replaces or wraps the existing route registry (still open — see Decisions
+   required before implementation, item 1).
+2. Support framework, repository, and ecosystem routes in the new schema (ecosystems
+   already exist in the current registry; carry them forward).
+3. Add stale/missing route repair actions and credential-provider references.
+4. Keep catalog operations available as non-interactive commands.
 
 Do not begin the interactive wizard before this composition protocol is stable. The
 wizard would otherwise encode temporary naming, manifest, and instruction assumptions
