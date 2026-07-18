@@ -1,6 +1,6 @@
 # Escape AI — Phase 1: Framework Composition Protocol
 **Status:** In progress
-**Plan:** [`../../plan/cohesive-system-integration-and-onboarding.md`](../../plan/cohesive-system-integration-and-onboarding.md) (Phase 0 + Phase 1)
+**Plan:** [`../../../plan/cohesive-system-integration-and-onboarding.md`](../../../plan/cohesive-system-integration-and-onboarding.md) (Phase 0 + Phase 1)
 **Spans:** esc-ai-orchestrator, esc-ai-execution-framework, esc-ai-architecture-framework
 
 ## Objective
@@ -13,9 +13,9 @@ only this repo's share of the work and its current status.
 
 ## Deliverables
 
-- [ ] Rename `workflows/` -> `.esc-ai/workflows/` in this repo; update
-      `workflows/README.md`, `workflows/active/README.md`, `README.md`, and this
-      file's own path.
+- [x] Rename `workflows/` -> `.esc-ai/workflows/` in this repo; updated
+      `.esc-ai/workflows/README.md`, `.esc-ai/workflows/active/README.md`,
+      `README.md`, and this file's own path.
 - [ ] Resolve `.esc-ai/runs/<run-id>/` output per task from the target repository
       (`Scheduler._work` / `OpenCodeRuntime.execute`) instead of the single
       process-wide `--output` CLI flag. The orchestrator's own SQLite DB
@@ -45,7 +45,8 @@ only this repo's share of the work and its current status.
 `policy.yaml` actually declares — `permissions.edit`/`execute`/`network` are
 schema-validated but never consulted when building the tool grant sent to the
 runtime. This was an intentional scope boundary for the original read-only OpenCode
-spike (see `esc-ai-execution-framework/workflows/archive/opencode-reference-adapter.md`),
+spike (see
+`esc-ai-execution-framework/.esc-ai/workflows/archive/opencode-reference-adapter.md`),
 but it means the policy contract does not yet enforce anything. Worth a dedicated
 workflow before any non-read-only execution path ships, and worth resolving before
 wider distribution given how much local system access this project's execution model

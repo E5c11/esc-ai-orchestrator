@@ -44,7 +44,7 @@ Endpoints:
 
 Failure candidates remain transient until reviewed. Promote durable handoff state into
 the consuming repository with `esc-exec checkpoint create` or `checkpoint update`, then
-commit `workflows/active/<task-id>/checkpoint.yaml`.
+commit `.esc-ai/workflows/active/<task-id>/checkpoint.yaml`.
 
 Local state lives under `.orchestrator/` and is not committed.
 
