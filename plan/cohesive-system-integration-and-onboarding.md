@@ -396,12 +396,39 @@ The orchestrator:
 Step 6 (`planning.awaiting-product-input`) is where the interaction stops being a fixed
 menu and becomes free-form conversation — but it is conversation with the *configured
 runtime*, not a raw, unmediated chat window onto whichever AI provider happens to be
-behind it. By this point the orchestrator has already loaded the repository's indexes,
-matched architecture profiles, and workflow policy; the conversation happens inside that
-loaded context, and — like any other run — is itself observable and logged as portable
-events. An unbounded chat pane would be exactly the unchecked-autonomy pattern Escape AI
-positions against; the boundary is what makes this step safe to hand to the user
-directly instead of over-constraining it with more menu levels.
+behind it. The user always talks to the orchestrator; the orchestrator relays each turn
+to the configured runtime and relays the response back. The runtime's own chat/API is
+never exposed directly. That mediation is what makes "free-form" and "bounded"
+compatible instead of contradictory — the boundary is not the AI choosing to stay in
+scope, it is the orchestrator enforcing the following on every turn:
+
+1. **Tool/permission grant, not AI good behavior.** The active policy decides what the
+   runtime is *capable of* that turn — during planning this defaults to read/glob/grep
+   only, no bash/edit/write/network unless the policy explicitly allows it. This is the
+   tool grant passed to the runtime, not a prompt instruction the AI could ignore; a
+   disallowed tool call fails at the runtime boundary regardless of what the
+   conversation contains.
+2. **Context scoping, not open filesystem access.** The runtime only ever sees the
+   indexes, architecture profiles, and workflow policy the orchestrator already routed
+   and loaded for the selected repositories — it has nothing to reference or act on
+   outside that.
+3. **Output gating, not trust in the transcript.** No matter how the conversation
+   proceeds, its only output is a *proposed* task graph and diff. Nothing is written or
+   committed until the human approves that structured proposal — the conversation
+   produces a proposal, never a direct write.
+4. **Full event logging.** Every turn is a portable event, like any other run. Bounded
+   means observable, not just prevented — a complete record survives even if something
+   goes wrong.
+5. **A defined lifecycle, not an open chat.** The conversation lives inside one state
+   with a start and an end (`planning.awaiting-product-input` →
+   `planning.awaiting-plan-approval`), not an infinite window — it has a job to finish.
+
+None of this multi-turn conversation exists yet. What is built today
+(`OpenCodeAdapter.execute`) is single-shot: the orchestrator builds one fully-formed
+prompt from a fixed task context, sends it, and gets one response back — that is
+execution-time context-gathering, not planning-time back-and-forth dialogue. Real
+multi-turn planning conversation, where the orchestrator re-checks policy and re-scopes
+context on every turn rather than once, is unbuilt; it belongs to Phase 7.
 
 ### Single-repository output
 
@@ -581,6 +608,9 @@ commit-ready files through one interface.
 
 - Define initiative and linked task-graph contracts.
 - Add task-type selection and conversational product questions.
+- Build multi-turn planning conversation: the orchestrator mediates every turn to the
+  configured runtime, re-checking the active policy's tool grant and re-scoping loaded
+  context each turn rather than once (see Planning conversation).
 - Route across registered repository indexes and architecture playbooks.
 - Generate reviewed single-repository workflow packages.
 - Generate linked multi-repository workflows with ordering and handoff contracts.
