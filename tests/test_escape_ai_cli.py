@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from esc_exec.manifests import component_manifest_path
 from esc_exec.registry import add_route
 
 from esc_orchestrator import escape_ai_cli as cli
@@ -32,14 +33,14 @@ class RenderingTests(unittest.TestCase):
     def test_render_proposal_shows_files_questions_and_suggestions(self):
         proposal = {
             "repository": {"id": "repo", "type": "gradle-multi-project"},
-            "files": [{"path": "esc-execution.yaml", "action": "create", "evidence": "no manifest found"}],
+            "files": [{"path": ".esc-ai/esc-execution.yaml", "action": "create", "evidence": "no manifest found"}],
             "semantic_questions": [{"component_id": "content", "field": "purpose", "prompt": "What is the purpose?"}],
             "profile_id_suggestions": {"content": ["ARCH-BE"]},
             "existing_adoption": {"instructions_file": True, "workflows_directory": False, "project_profile": False},
         }
         rendered = cli.render_proposal(proposal)
         self.assertIn("[create", rendered)
-        self.assertIn("esc-execution.yaml", rendered)
+        self.assertIn(".esc-ai/esc-execution.yaml", rendered)
         self.assertIn("ARCH-BE", rendered)
         self.assertIn("instructions_file", rendered)
         self.assertIn("1 question(s) require your input", rendered)
@@ -53,15 +54,15 @@ class RenderingTests(unittest.TestCase):
 
     def test_render_apply_result_shows_written_files_and_warnings(self):
         result = {
-            "written": ["esc-execution.yaml", "content/esc-component.yaml"],
-            "workflow_inheritance": {"created": ["INSTRUCTIONS.md"], "existing": [".esc-ai/workflows/README.md"]},
+            "written": [".esc-ai/esc-execution.yaml", ".esc-ai/components/content/esc-component.yaml"],
+            "workflow_inheritance": {"created": [".esc-ai/INSTRUCTIONS.md"], "existing": [".esc-ai/workflows/README.md"]},
             "stub_documents": {"content": ["ORCH-BE-FEAT"]},
             "missing_documents": {"content": ["ARCH-NOT-REAL"]},
             "empty_profile_id_suggestions": ["other"],
         }
         rendered = cli.render_apply_result(result)
-        self.assertIn("esc-execution.yaml", rendered)
-        self.assertIn("INSTRUCTIONS.md", rendered)
+        self.assertIn(".esc-ai/esc-execution.yaml", rendered)
+        self.assertIn(".esc-ai/INSTRUCTIONS.md", rendered)
         self.assertIn("left untouched", rendered)
         self.assertIn("stub architecture documents", rendered)
         self.assertIn("ORCH-BE-FEAT", rendered)
@@ -144,9 +145,9 @@ class NonInteractiveDispatchTests(unittest.TestCase):
             code, out = run(["repository", "apply", "repo"])
             self.assertEqual(0, code)
             self.assertIn("Applied.", out)
-            self.assertTrue((repository_dir / "INSTRUCTIONS.md").is_file())
+            self.assertTrue((repository_dir / ".esc-ai" / "INSTRUCTIONS.md").is_file())
             self.assertTrue((repository_dir / ".esc-ai" / "workflows" / "README.md").is_file())
-            manifest_text = (repository_dir / "content" / "esc-component.yaml").read_text(encoding="utf-8")
+            manifest_text = component_manifest_path(repository_dir, "content").read_text(encoding="utf-8")
             self.assertIn("Owns content.", manifest_text)
 
             code, out = run(["repository", "validate", "repo"])
@@ -309,9 +310,9 @@ class InteractiveOnboardingTests(unittest.TestCase):
             output = buffer.getvalue()
             self.assertIn("Applied.", output)
             self.assertIn("Nothing has been committed", output)
-            self.assertTrue((repository_dir / "esc-execution.yaml").is_file())
-            self.assertTrue((repository_dir / "INSTRUCTIONS.md").is_file())
-            self.assertIn("Owns content.", (repository_dir / "content" / "esc-component.yaml").read_text(encoding="utf-8"))
+            self.assertTrue((repository_dir / ".esc-ai" / "esc-execution.yaml").is_file())
+            self.assertTrue((repository_dir / ".esc-ai" / "INSTRUCTIONS.md").is_file())
+            self.assertIn("Owns content.", component_manifest_path(repository_dir, "content").read_text(encoding="utf-8"))
 
     def test_cancelling_before_confirmation_writes_nothing(self):
         with TemporaryDirectory() as temp:
@@ -333,8 +334,8 @@ class InteractiveOnboardingTests(unittest.TestCase):
 
             self.assertEqual(0, code)
             self.assertIn("Cancelled", buffer.getvalue())
-            self.assertFalse((repository_dir / "esc-execution.yaml").exists())
-            self.assertFalse((repository_dir / "INSTRUCTIONS.md").exists())
+            self.assertFalse((repository_dir / ".esc-ai" / "esc-execution.yaml").exists())
+            self.assertFalse((repository_dir / ".esc-ai" / "INSTRUCTIONS.md").exists())
 
     def test_resuming_unchanged_repository_detects_existing_proposal(self):
         with TemporaryDirectory() as temp:

@@ -17,3 +17,4 @@ duplicate the master plan into each workflow.
 | 6 | [Interactive CLI onboarding wizard](../archive/phase-6-interactive-cli-onboarding-wizard.md) | `escape-ai` menu and non-interactive subcommands for onboarding | Complete |
 | 7 | [Planning and workflow generation](../archive/phase-7-planning-and-workflow-generation.md) | `plan draft/answer/apply/status`, single- and multi-repository task graph generation | Complete |
 | 8 | [Integrated execution lifecycle](../archive/phase-8-execution-lifecycle-wiring.md) | Approved task graphs actually execute through the scheduler/runtime, with retry, checkpoint promotion, and cross-repository resume views | Complete |
+| 9 | [`.esc-ai/` generated-artifact consolidation](../archive/escape-ai-directory-consolidation.md) | `repository_status`'s `INSTRUCTIONS.md` presence check and CLI rendering tests updated for the execution framework's new all-under-`.esc-ai/` manifest/index layout | Complete |

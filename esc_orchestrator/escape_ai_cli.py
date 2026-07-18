@@ -274,7 +274,7 @@ def repository_status(store: Store, registry: Path, repository_id: str) -> dict[
         "has_proposal": proposal_record is not None,
         "has_pending_answers": pending_record is not None,
         "has_applied_answers": answers_record is not None,
-        "instructions_file_present": bool(path and (path / "INSTRUCTIONS.md").is_file()),
+        "instructions_file_present": bool(path and (path / ".esc-ai" / "INSTRUCTIONS.md").is_file()),
         "workflows_directory_present": bool(path and (path / ".esc-ai" / "workflows").is_dir()),
         "process_metrics": onboarding_process_metrics(store, repository_id),
     }

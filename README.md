@@ -66,7 +66,9 @@ escape-ai task promote-checkpoint <repository-id> <task-id> [--yes]   # preview 
 separate steps: analysis/drafting never writes anything, staging an answer never
 writes anything, and `apply` is the one explicit approval boundary where files
 actually get written — manifests, indexes, verification/architecture profiles, and
-`INSTRUCTIONS.md`/`.esc-ai/workflows/` for onboarding; `.esc-ai/workflows/active/<task-id>/task.yaml`
+`.esc-ai/INSTRUCTIONS.md`/`.esc-ai/workflows/` for onboarding (everything escape-ai
+generates and manages lives under `.esc-ai/`, component manifests flat and keyed by
+stable component ID); `.esc-ai/workflows/active/<task-id>/task.yaml`
 and `README.md` for planning. A plan spanning more than one repository generates one
 cross-linked task per repository — each depends on the previous one in declared
 order — validating every repository/component reference before writing anything to

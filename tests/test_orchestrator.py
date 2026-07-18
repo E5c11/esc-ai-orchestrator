@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from urllib.request import Request, urlopen
 
+from esc_exec.manifests import component_manifest_path
 from esc_exec.registry import add_route
 from esc_orchestrator.api import server
 from esc_orchestrator.scheduler import Scheduler
@@ -104,7 +105,7 @@ class OrchestratorTests(unittest.TestCase):
 
             first = json.loads(urlopen(Request(base + "/repositories/repo/analyze", method="POST", data=b"")).read())
             self.assertEqual("repo", first["repository"]["id"])
-            self.assertEqual("create", next(entry["action"] for entry in first["files"] if entry["path"] == "esc-execution.yaml"))
+            self.assertEqual("create", next(entry["action"] for entry in first["files"] if entry["path"] == ".esc-ai/esc-execution.yaml"))
 
             fetched = json.loads(urlopen(base + "/repositories/repo/proposal").read())
             self.assertEqual(first["input_digest"], fetched["input_digest"])
@@ -142,12 +143,12 @@ class OrchestratorTests(unittest.TestCase):
                 result = json.loads(
                     urlopen(Request(base + "/repositories/repo/answers", method="POST", data=answers)).read()
                 )
-                self.assertIn("esc-execution.yaml", result["written"])
-                manifest_path = repository_dir / "content" / "esc-component.yaml"
+                self.assertIn(".esc-ai/esc-execution.yaml", result["written"])
+                manifest_path = component_manifest_path(repository_dir, "content")
                 self.assertTrue(manifest_path.is_file())
                 self.assertIn("Owns content.", manifest_path.read_text(encoding="utf-8"))
-                self.assertIn("INSTRUCTIONS.md", result["workflow_inheritance"]["created"])
-                self.assertTrue((repository_dir / "INSTRUCTIONS.md").is_file())
+                self.assertIn(".esc-ai/INSTRUCTIONS.md", result["workflow_inheritance"]["created"])
+                self.assertTrue((repository_dir / ".esc-ai" / "INSTRUCTIONS.md").is_file())
                 self.assertTrue((repository_dir / ".esc-ai" / "workflows" / "README.md").is_file())
 
                 fetched = json.loads(urlopen(base + "/repositories/repo/answers").read())

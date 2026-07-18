@@ -109,15 +109,16 @@ Escape AI (`escape-ai` CLI/UI owned by orchestrator)
   |     +-- ecosystem groupings (named sets of related repository IDs)
   |
   +-- selected repository/ies
-        +-- esc-execution.yaml                 shared repository identity
-        +-- esc-index.json                     first repository routing read
-        +-- esc-dependencies.json              component impact graph
         +-- context/project-profile.yaml       architecture defaults during migration
-        +-- <component>/esc-component.yaml     shared component identity and selectors
-        +-- <component>/esc-index.json          bounded structural routing
-        +-- <component>/esc-*-profile.yaml      execution/architecture policies
-        +-- INSTRUCTIONS.md                     thin generated inheritance pointer
         +-- .esc-ai/                            repository-local Escape AI directory
+              +-- esc-execution.yaml           shared repository identity
+              +-- esc-index.json               first repository routing read
+              +-- esc-dependencies.json        component impact graph
+              +-- INSTRUCTIONS.md              thin generated inheritance pointer
+              +-- components/<component-id>/   flat, keyed by stable component ID
+              |     +-- esc-component.yaml     shared component identity and selectors
+              |     +-- esc-index.json         bounded structural routing
+              |     +-- esc-*-profile.yaml     execution/architecture policies
               +-- workflows/README.md           repository-specific workflow policy
               +-- workflows/active|archive/     durable project work (committed)
               +-- runs/<run-id>/                transient per-run task context (gitignored)
@@ -125,19 +126,46 @@ Escape AI (`escape-ai` CLI/UI owned by orchestrator)
 
 ### Repository-local Escape AI directory
 
-`.esc-ai/` is the single, obvious location for everything Escape AI tracks about
-ongoing work in a repository — mirroring how `.claude/` holds Claude Code's own
-committed, human-authored material without the dot-prefix meaning "hidden" or
-"uninteresting."
+`.esc-ai/` is the single, obvious location for everything Escape AI tracks about a
+repository — its shared identity/discovery manifests and indexes as much as its
+ongoing work — mirroring how `.claude/` holds Claude Code's own committed,
+human-authored material without the dot-prefix meaning "hidden" or "uninteresting."
 
 The identity/discovery files — `esc-execution.yaml`, `esc-index.json`,
-`esc-dependencies.json`, `<component>/esc-component.yaml`, and `INSTRUCTIONS.md` — stay
-at repository/component root. Their entire purpose is to be the first thing any tool or
-human discovers when it opens the repository or a component, the same reason
-`package.json` is not nested inside `.npm/`. Hiding them would defeat that purpose.
+`esc-dependencies.json`, `INSTRUCTIONS.md`, and every per-component
+`esc-component.yaml`/`esc-index.json`/`esc-*-profile.yaml` — live under `.esc-ai/`,
+not at repository/component root. This reverses an earlier version of this plan,
+which argued these files needed root placement "for discoverability, the same reason
+`package.json` isn't inside `.npm/`." That argument's premise doesn't hold: escape-ai
+never discovers a repository by scanning a directory tree for these files. It always
+resolves a repository through the machine-local registry by ID first (see Machine-local
+catalog), then reads a conventional relative path under an already-known root — a hard
+non-goal already states "the system must never scan arbitrary parent directories for
+repositories." There is no scan to be discoverable to, so the `package.json` analogy
+was defending against a scenario that can't occur here.
 
-Everything else Escape AI manages as a record of *work being done*, rather than *what
-the repository is*, lives under `.esc-ai/`:
+The real cost the old layout produced, found by actually onboarding a representative
+10-component repository, was the opposite problem: every component directory got 4
+escape-ai files (`esc-component.yaml`, `esc-index.json`,
+`esc-verification-profile.yaml`, `esc-architecture-profile.yaml`) mixed in with its
+real source/build/README files. Consolidating everything under `.esc-ai/` fixes that
+directly.
+
+Per-component files are **flat under `.esc-ai/components/<component-id>/`, keyed by
+the component's stable ID — not mirroring its real filesystem path**. Component IDs
+are the stable identifier this system already resolves everything else by (routing,
+task scope, dependency graphs); physical paths are expected to change through
+refactors and renames. Mirroring a component's path under `.esc-ai/` would just
+recreate the coupling-to-something-that-moves problem in a new location instead of
+removing it. The component's real source location (its `path` field, e.g. `content`)
+is completely unaffected by any of this: it always resolves as `repository_root /
+component.path`. Only the manifest bundle's own storage location changed — the two
+are decoupled by design, and a generator must never resolve one against the other's
+directory.
+
+Everything Escape AI manages as a record of *work being done*, rather than *what the
+repository is*, also lives under `.esc-ai/`, alongside the identity/discovery files
+above:
 
 - `.esc-ai/workflows/README.md`, `.esc-ai/workflows/active/`,
   `.esc-ai/workflows/archive/` — the durable, human-reviewed workflow package (formerly
@@ -171,9 +199,10 @@ silently choose whichever document they read last.
 
 ## Shared manifest direction
 
-`esc-execution.yaml` and `esc-component.yaml` should become the shared discovery
-boundary for both frameworks. They should link to architecture selection and execution
-policy without embedding entire framework documents.
+`esc-execution.yaml` (at `.esc-ai/esc-execution.yaml`) and `esc-component.yaml` (at
+`.esc-ai/components/<component-id>/esc-component.yaml`) should become the shared
+discovery boundary for both frameworks. They should link to architecture selection and
+execution policy without embedding entire framework documents.
 
 Repository-level information should include:
 
@@ -354,13 +383,16 @@ global fallback.
 Onboarding creates or minimally adapts:
 
 ```text
-INSTRUCTIONS.md
+.esc-ai/INSTRUCTIONS.md
 .esc-ai/workflows/README.md
 .esc-ai/workflows/active/README.md
 .esc-ai/workflows/archive/README.md
 ```
 
-Generated `INSTRUCTIONS.md` is a thin pointer; it does not copy either framework.
+Generated `INSTRUCTIONS.md` is a thin pointer; it does not copy either framework. Since
+`workflows/README.md` and `INSTRUCTIONS.md` are now siblings under the same `.esc-ai/`
+parent, `INSTRUCTIONS.md`'s cross-reference to it is a same-directory-relative link
+(`workflows/README.md`), not a repo-root-relative one.
 `.esc-ai/workflows/README.md` contains only repository-specific policy such as:
 
 - project-specific framework extensions and precedence;
@@ -837,7 +869,11 @@ unverified.
 9. **Decided:** `workflows/` moves under `.esc-ai/workflows/`, consolidated with the
    new `.esc-ai/runs/` — one obvious repository-local root for everything Escape AI
    tracks about ongoing work, rather than splitting activity/history across a visible
-   and a hidden location. Identity/discovery manifests stay at root (see
+   and a hidden location. **Superseded:** the identity/discovery manifests
+   (`esc-execution.yaml`, `esc-index.json`, `esc-dependencies.json`, `INSTRUCTIONS.md`,
+   and every per-component manifest/index/profile) also moved under `.esc-ai/` —
+   flat and keyed by stable component ID for the per-component files — once real
+   onboarding evidence showed the root-placement argument's premise didn't hold (see
    Repository-local Escape AI directory).
 10. **Decided:** repositories may be grouped into a named ecosystem in the
     machine-local catalog; live cross-repository coordination state belongs in the
