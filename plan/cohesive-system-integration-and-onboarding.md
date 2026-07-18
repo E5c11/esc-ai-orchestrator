@@ -864,15 +864,54 @@ unverified.
     evidence-driven refinement this phase exists to surface — a second real repository
     with a different but common Gradle convention exposed a gap the first pilot
     couldn't.
-- Pilot one linked multi-repository feature.
+- Pilot one linked multi-repository feature. **Done** — the `ampm` ecosystem has 10+
+  repositories; rather than onboard all of them, scoped to the real 3-repo slice that
+  already exists as an in-flight cross-repo dependency: `ampm-contracts` (shared
+  DTO/path-constant library, Wave 1 "user profile" published) consumed by
+  `ampm-backend` (source of truth) and `AMPM` (28-module KMP mobile app). Onboarded
+  `ampm-contracts` and `AMPM` fresh; drafted a real next initiative —
+  `ampm-contracts-wave2-auth-config`, migrating the Auth + Config DTOs per
+  `ampm-contracts`'s own deferred "Waves 2-7" plan — via `plan draft` → `answer` →
+  `apply`. Produced correctly-chained per-repo `task.yaml` files (`ampm-contracts` →
+  `ampm-backend` → `AMPM`, each `depends_on` the previous) with real, resolvable
+  component scopes; `build_task_context` successfully resolved routing, search_roots,
+  and architecture-framework documents for the `AMPM` task against real data. Not
+  executed (no task run) — this validates the planning/task-graph mechanism itself,
+  not the migration. Nothing committed in `ampm-contracts`/`ampm-backend`/`AMPM`.
+  - Evidence found and fixed (`esc_exec/gradle.py`, `esc_exec/dependencies.py`):
+    `ampm-contracts` is a single-module Gradle repository (no `include(...)`
+    subprojects) — `detect_gradle_repository` only ever looked for included
+    subprojects, so it detected zero components and could never be onboarded at all.
+    Fixed by treating the root project as the sole component when no includes exist.
+  - Evidence found and fixed (`esc_exec/gradle.py`, `esc_exec/indexing.py`): every KMP
+    component in both `CatchMeIfYouCan` and `AMPM` (56 components across the two)
+    uses `src/commonMain/kotlin`, `src/androidMain/kotlin`, etc., never the plain JVM
+    `src/main/kotlin`/`src/test/kotlin` layout `component_structure` assumed — so
+    every KMP component's manifest had empty `search_roots`, giving an AI agent no
+    indication of where to look. Fixed by detecting per-source-set paths
+    (`source_<Main>`/`tests_<Test>`) and having index generation scan/merge across
+    all of them. This is the same "second real repo, different real convention"
+    pattern as the type-safe-accessor fix above, just found one repo later.
+  - Evidence found, not fixed (recorded for later prioritization): when a repository
+    already has a `context/project-profile.yaml`, `_architecture_signals` applies
+    that one repository-wide framework list to *every* component identically, with
+    no per-component override path surfaced through `analyze`'s questions (though
+    `apply_onboarding_answers` does honor an explicit per-component `frameworks`
+    answer if one is supplied programmatically). At `AMPM`'s real scale (28
+    components) this produced identical `PLAT-MOB-HTTP`/`PLAT-MOB-ROOM`/
+    `PLAT-MOB-FIREBASE` suggestions for modules that plainly don't touch Room or
+    Firebase (e.g. `core-designsystem`, `tools-detekt-rules`). Worked around for this
+    pilot by hand-supplying accurate per-component `frameworks` answers grounded in
+    each module's real `build.gradle.kts` dependencies; the underlying default
+    behavior is still imprecise at multi-module scale and worth revisiting.
 - Compare context/tool/token/rework metrics against representative prior workflows.
   Blocked — needs a working AI provider connection with frictionless subscription-based
   execution, which no current adapter provides (see `native-cli-provider-adapters.md`).
 - Refine prompts and defaults only from observed evidence.
 
 **Exit:** the cohesive flow is validated on existing, new, and cross-repository cases.
-Existing- and new-repository cases done; cross-repository case and efficiency
-comparison remain.
+Existing-, new-, and cross-repository cases done; only the efficiency comparison
+remains, blocked on a working provider adapter.
 
 ## Decisions required before implementation
 
