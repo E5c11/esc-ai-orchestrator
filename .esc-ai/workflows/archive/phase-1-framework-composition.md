@@ -43,16 +43,19 @@ only this repo's share of the work and its current status.
 - Repositories may be grouped into a named ecosystem in the machine-local catalog;
   live cross-repo coordination stays in the orchestrator's own persistence layer.
 
-## Open follow-up (not yet scheduled)
+## Open follow-up — resolved
 
-`OpenCodeAdapter`'s tool permissions are currently hardcoded read-only
+`OpenCodeAdapter`'s tool permissions were hardcoded read-only
 (`READ_ONLY_TOOLS` in `esc_exec/opencode_adapter.py`), regardless of what a loaded
-`policy.yaml` actually declares — `permissions.edit`/`execute`/`network` are
+`policy.yaml` actually declared — `permissions.edit`/`execute`/`network` were
 schema-validated but never consulted when building the tool grant sent to the
 runtime. This was an intentional scope boundary for the original read-only OpenCode
 spike (see
 `esc-ai-execution-framework/.esc-ai/workflows/archive/opencode-reference-adapter.md`),
-but it means the policy contract does not yet enforce anything. Worth a dedicated
-workflow before any non-read-only execution path ships, and worth resolving before
-wider distribution given how much local system access this project's execution model
-implies.
+but it meant the policy contract didn't enforce anything.
+
+**Fixed** in `esc-ai-execution-framework` — see
+`esc-ai-execution-framework/.esc-ai/workflows/archive/policy-to-tool-grant-enforcement.md`
+for the full record. `permissions.external_paths` and the policy document's
+`limits`/`approvals` fields remain unenforced; that gap is real and explicitly
+called out there, not fixed by this change.
