@@ -146,9 +146,13 @@ class OrchestratorTests(unittest.TestCase):
                 manifest_path = repository_dir / "content" / "esc-component.yaml"
                 self.assertTrue(manifest_path.is_file())
                 self.assertIn("Owns content.", manifest_path.read_text(encoding="utf-8"))
+                self.assertIn("INSTRUCTIONS.md", result["workflow_inheritance"]["created"])
+                self.assertTrue((repository_dir / "INSTRUCTIONS.md").is_file())
+                self.assertTrue((repository_dir / ".esc-ai" / "workflows" / "README.md").is_file())
 
                 fetched = json.loads(urlopen(base + "/repositories/repo/answers").read())
                 self.assertEqual(result["written"], fetched["written"])
+                self.assertEqual(result["workflow_inheritance"], fetched["workflow_inheritance"])
             finally:
                 httpd.shutdown()
                 httpd.server_close()

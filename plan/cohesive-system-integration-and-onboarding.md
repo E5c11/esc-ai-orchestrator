@@ -619,38 +619,60 @@ modifying the repository. Satisfied today via `esc-exec repository analyze <path
 (execution framework, works now) and the orchestrator's HTTP endpoints above; the
 unified `escape-ai` CLI itself is still Phase 6.
 
-### Phase 4 — Human-assisted manifest/profile construction
+### Phase 4 — Human-assisted manifest/profile construction — **Complete**
 
-- Define typed semantic questions and evidence attachments.
+- Define typed semantic questions and evidence attachments. **Done** — one bounded
+  question per component (purpose, or frameworks/targets when needed), not a
+  question per possible field.
 - Merge answers into generated manifests without overwriting authored fields.
-- Import existing `context/project-profile.yaml` and framework references.
-- Generate/complete verification, report, and architecture profile flows.
-- Detect unresolved architecture stubs through the Gap Protocol.
+  **Done** — `apply_onboarding_answers`, the first onboarding step that writes to a
+  repository.
+- Import existing `context/project-profile.yaml` and framework references. **Done**
+  — `import_project_profile`; a repository that already has one needs little to no
+  semantic questioning.
+- Generate/complete verification, report, and architecture profile flows. **Done** —
+  auto-generated for any component that lacks one, as part of applying answers.
+- Detect unresolved architecture stubs through the Gap Protocol. **Done** — surfaced
+  in the result, never silently treated as complete.
 - Recommend `architecture.profile_ids`, not a template library: extend the
   architecture framework's existing `PROFILE_DOC_MAP`-style signal-to-doc-ID mapping
   (`tools/lookup.py`) — already proven, already maintained — to also emit a
   suggested `profile_ids` list from Phase 3's detected signals, instead of building a
   separate template content type, schema, and matching engine. A poor/empty
-  suggestion feeds the Who this is for readiness judgment.
+  suggestion feeds the Who this is for readiness judgment. **Done** —
+  `profile-doc-map.json` export + `suggest_profile_ids`.
 - For a brand-new project (no detected signals to match against), reuse the planning
   conversation mechanism (see Planning conversation) rather than a separate flow:
   describe the project, get curated profile options from the existing
   platform/architecture/frameworks enums, confirm, and let the same signal-to-doc-ID
-  mapping resolve `profile_ids` from there.
+  mapping resolve `profile_ids` from there. **Not yet built** — depends on Phase 7's
+  planning conversation existing first.
 
 **Exit:** an incomplete proposal can resume after user input and reach valid shared
 manifests/profiles.
 
-### Phase 5 — Workflow inheritance bootstrap
+### Phase 5 — Workflow inheritance bootstrap — **Complete**
 
-- Define thin instruction-pointer templates.
-- Define repository-specific workflow policy schema/template.
+- Define thin instruction-pointer templates. **Done** — `INSTRUCTIONS.md` referencing
+  both frameworks by stable ID, no duplicated content.
+- Define repository-specific workflow policy schema/template. **Done** —
+  `schemas/workflow-policy.schema.yaml` (structured frontmatter) +
+  `.esc-ai/workflows/README.md`'s prose skeleton.
 - Analyze and migrate existing workflow READMEs without deleting project history.
+  **Done** as create-if-missing/report-if-existing — a repository with mature,
+  hand-written content is left completely untouched and reported back, not migrated
+  by template (a full migration-diff proposal for existing content remains future
+  work if evidence from Phase 10's pilot shows it's needed).
 - Validate that core framework instructions are referenced rather than duplicated.
-- Bootstrap active/archive directories idempotently.
+  **Done** as an advisory self-check on freshly generated files only (never on
+  pre-existing content, which isn't reliably checkable this way).
+- Bootstrap active/archive directories idempotently. **Done** —
+  `bootstrap_workflow_inheritance`, verified idempotent and non-destructive by test.
 
 **Exit:** a newly onboarded repository has a minimal, valid workflow package; an
-existing repository receives a reviewed migration diff.
+existing repository receives a reviewed migration diff. First half holds; the
+"reviewed migration diff" for a repository with existing content is the
+future-work item noted above, not yet built.
 
 ### Phase 6 — Interactive CLI onboarding wizard
 
@@ -719,8 +741,11 @@ CLI/API.
    (e.g. `document.yaml` 1.1 → 1.2 added enum values without breaking consumers).
 3. Decide whether `context/project-profile.yaml` is migrated immediately or supported
    through a deprecation window.
-4. Define which repository-specific instruction fields are structured versus free-form
-   Markdown.
+4. **Decided:** structured YAML frontmatter for the genuinely enumerable fields
+   (project-specific extension reference, precedence, final-gate commands), free-form
+   Markdown prose for the rest (deployment constraints, exceptions, roadmap
+   pointers) — matching the frontmatter-plus-prose convention the architecture
+   framework's own documents already use. See `schemas/workflow-policy.schema.yaml`.
 5. Define the canonical initiative/task ID strategy across repositories.
 6. Decide whether workflow writes are applied directly after approval or first emitted
    as a patch bundle.
@@ -756,26 +781,31 @@ CLI/API.
 
 ## Recommended next task
 
-Phases 0, 1, 2, and 3 are all complete — see each phase's entry in Implementation
-sequence for what shipped. `ampm-backend` migration was intentionally left out of that
-work; it belongs to Phase 10's pilot validation against a repository that is a good
-fit by the Who this is for definition, so it's still open but not blocking.
+Phases 0 through 5 are all complete — see each phase's entry in Implementation
+sequence for what shipped and what's honestly still open within each (Phase 4's
+new-project planning-conversation reuse depends on Phase 7; Phase 5's migration-diff
+handling for a repository with pre-existing content is deferred pending Phase 10
+evidence). `ampm-backend` migration was intentionally left out of this work; it
+belongs to Phase 10's pilot validation against a repository that is a good fit by the
+Who this is for definition, so it's still open but not blocking.
 
-Next: **Phase 4 — Human-assisted manifest/profile construction**.
+The composition protocol (Phases 0-5: naming, framework composition, the machine-local
+catalog, read-only analysis, human-assisted construction, workflow bootstrap) is now
+stable enough to build the interactive wizard on top of without it immediately needing
+migration.
 
-1. Define typed semantic questions and evidence attachments.
-2. Merge answers into generated manifests without overwriting authored fields.
-3. Import existing `context/project-profile.yaml` and framework references.
-4. Generate/complete verification, report, and architecture profile flows.
-5. Detect unresolved architecture stubs through the Gap Protocol.
-6. Recommend `architecture.profile_ids` by extending the existing `PROFILE_DOC_MAP`
-   signal-to-doc-ID mapping (`tools/lookup.py`) rather than building a separate
-   template content type/schema/matching engine — turning "which of 90+
-   architecture-framework docs apply to your component" into "here's our
-   recommendation, accept it, or adjust it." A poor/empty suggestion feeds the Who
-   this is for readiness judgment. New projects with no detected signals reuse the
-   planning conversation mechanism instead of a separate flow.
+Next: **Phase 6 — Interactive CLI onboarding wizard**.
 
-Do not begin the interactive wizard before this composition protocol is stable. The
-wizard would otherwise encode temporary naming, manifest, and instruction assumptions
-that would immediately need migration.
+1. Add the `escape-ai` top-level interactive menu and Escape AI product branding (see
+   Unified CLI and interface for the locked-in six-item menu).
+2. Render onboarding state-machine questions and proposals — the existing
+   `analyze`/`answer` engine already produces everything a wizard needs to render;
+   this phase is the rendering/interaction layer, not new analysis logic.
+3. Add non-interactive equivalents: `repository add`, `analyze`, `answer`, `apply`,
+   `validate`, and `status` (`analyze`/`answer` already exist as `esc-exec repository
+   analyze`/`answer`; this phase adds the rest and unifies them under `escape-ai`).
+4. Add cancellation, resumption, and dry-run behavior.
+5. Test terminal output separately from onboarding business logic — the business
+   logic (`analyze_repository`/`apply_onboarding_answers`) is already fully
+   independent of any terminal rendering, so this should mean writing wizard-layer
+   tests, not refactoring existing logic to decouple it.
