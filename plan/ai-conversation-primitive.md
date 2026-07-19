@@ -1,0 +1,207 @@
+# AI Conversation Primitive — Plan
+
+**Status:** Proposed
+**Date:** 2026-07-20
+**Objective:** Give escape-ai a genuine multi-turn AI conversation capability -- not
+another one-shot batched call -- usable wherever a bounded decision needs real
+back-and-forth with a human before converging, rather than a single suggest-then-
+confirm pass.
+
+## Why this is a separate plan
+
+Started as part of `scaffold-new-or-empty-repository.md` (a new/empty repo needs a
+conversation about intent, since there's no source to ground a one-shot suggestion
+in), but the user pointed out this isn't scaffold-specific: refining a feature/bug-fix
+plan needs the same back-and-forth. Confirmed directly against the code, not assumed
+-- `esc_exec/planning.py` (`route_objective`, `planning_questions`,
+`generate_single_repository_workflow`) is entirely static keyword-matching Q&A today;
+grepped `escape_ai_cli.py`'s planning flow for any Claude/Runtime/Adapter reference
+and found none. Zero AI involvement anywhere in "Plan new work," same gap as
+onboarding had before Tier 2.
+
+This is the shared mechanism both consumers need -- the hard design work (session
+continuity, turn-taking UX, when a conversation ends, what artifact it produces) is
+common to both, not specific to either. Splitting it out avoids designing it twice,
+slightly differently, in two different plan docs.
+
+## The idea
+
+- Uses the adapter's already-threaded `session_id`/`--resume` mechanism -- present in
+  `ClaudeCodeAdapter.execute`'s signature since it was first built, but never actually
+  exercised end-to-end. Each conversational turn is a real `claude -p --resume <id>`
+  call, not a single batched suggestion the way Tier 2 (purpose/frameworks
+  suggestions) works.
+- Still bounded, matching this system's whole "bounded, evidence-driven, observable"
+  discipline -- not open-ended chat. Each conversation is scoped to converging on one
+  concrete artifact (a stack choice for scaffolding; a refined objective/scope/
+  completion-conditions for planning), just reached via multiple turns instead of one.
+- Ends in a concrete, reviewed proposal the human explicitly applies -- never
+  auto-applied mid-conversation or at conversation end without a real confirm step,
+  matching every other write path in this system (onboarding's proposal engine, plan
+  drafts, checkpoints).
+- **Resolved 2026-07-20, verified live.** Multiple turns do *not* re-pay the fixed
+  overhead each time. A two-turn `--resume` test measured: turn 1 (fresh) --
+  `cache_creation_input_tokens: 6141` (full cache-write cost paid); turn 2 (resumed)
+  -- `cache_creation_input_tokens: 45` (almost nothing new), `cache_read_input_tokens:
+  10620` (the prior turn's context reused from cache, not re-paid at full price).
+  The model also genuinely remembered turn 1's content without being reminded,
+  confirming real conversational continuity, not just cheap-but-stateless calls. A
+  multi-turn conversation is affordable: pay the large fixed cost once on the first
+  turn, then each subsequent turn is mostly cheap cache reads plus whatever's
+  actually new.
+
+### Ending a conversation -- two real thresholds, not a fabricated "quality" signal
+
+A long-running conversation needs a stopping point before context grows unbounded.
+There's no API-exposed signal for response quality/degradation to trigger on --
+inventing one would be exactly the kind of ungrounded signal this project has
+deliberately avoided everywhere else ("trust the artifact, not a guess"). The only
+thing genuinely measurable each turn is context-window consumption (`cache_read_
+input_tokens + cache_creation_input_tokens + input_tokens` against the model's real
+`context_window`, both real fields the API already returns). So: two tiers of the
+*same* real measurement, not two different mechanisms --
+
+- **Soft threshold (first resort), ~60-70% of context window:** proactively offer to
+  wrap up and finalize what's converged on so far, rather than continuing to grow the
+  session.
+- **Hard threshold (last resort), 90%:** forces a stop -- matches the exact pattern
+  already established in `task-orchestration-and-verification-loop.md` for
+  subscription-usage dispatch pausing, same threshold, same reasoning.
+- Turn count is a cheap secondary nudge worth having alongside the percentage --
+  a conversation with many small turns can be tiring for the *human* to follow even
+  when token-cheap, a different kind of "getting unwieldy" than context math alone.
+
+Either threshold should produce something durable, not just cut off -- see below.
+
+### The missing artifact: conversation state before a task exists
+
+Neither of this system's two existing "in-progress work" artifacts actually fits a
+mid-conversation stopping point, confirmed by reading both schemas directly:
+
+- `checkpoint.schema.yaml` has exactly the right `progress` shape (`completed`/
+  `decisions`/`remaining`/`blockers`) but requires `task_id` and `objective` --
+  it presupposes a task already exists and is mid-execution. A planning conversation
+  often hasn't produced a task yet when it hits a threshold.
+- `initiative.schema.yaml` requires `tasks` with at least one item -- it's the
+  *converged* output of planning, not a mid-conversation snapshot.
+
+This needs a new artifact -- reusing checkpoint's proven `progress` shape (already
+validated, no reason to redesign it) rather than forcing it into either existing
+schema. But a flat "everything so far" dump isn't enough either: there's a real
+difference between what should persist indefinitely and what's just this
+conversation's scratch work, and collapsing that distinction means either every future
+session re-reads a growing pile of stale back-and-forth, or durable identity/direction
+gets lost the moment a conversation is compacted away. So this is actually **two
+artifacts, two lifecycles, not one**:
+
+**`project_roadmap`** -- durable, repository-level, one per repository, *updated* in
+place, never just appended to. This is what every future session gets seeded with by
+default:
+
+```yaml
+schema_version: 1
+project_roadmap:
+  repository: string
+  updated_at: date-time
+  purpose: string           # "this repo is about XYZ" -- durable identity, rarely changes
+  current_stage: string     # "X" -- where implementation actually stands right now
+  direction: string         # "moving towards Y" -- where it's headed
+  durable_decisions: [...]  # architecture/stack choices etc. that remain valid
+                             # indefinitely -- not this conversation's tactical detail
+```
+
+**`conversation_summary`** -- ephemeral, per-conversation, the compaction artifact
+itself. Its job is to feed an update into `project_roadmap`, not to be what future
+sessions are seeded with directly:
+
+```yaml
+schema_version: 1
+conversation_summary:
+  id: string
+  purpose: string        # "scaffold new repo X", "plan feature Y" -- what this is for
+  status: in-progress | converged | abandoned
+  updated_at: date-time
+progress:
+  completed: [...]
+  decisions: [...]
+  remaining: [...]
+  open_questions: [...]  # undecided -- distinct from a task's "blockers" (implies
+                          # stuck, needs a human), an open question is just not
+                          # resolved yet
+```
+
+At a compaction threshold: the AI extracts whatever from `conversation_summary` is
+actually durable (identity/stage/direction/decisions that outlive this conversation)
+into a `project_roadmap` update, and the rest -- the tactical back-and-forth that got
+there -- is left behind, not carried into the next seed. This *is* a legitimate use of
+AI judgment, unlike this system's usual "never trust the agent's self-report" stance
+elsewhere: summarization is genuinely the model's job here, not a correctness claim
+about whether a task succeeded. But the extracted `project_roadmap` update should
+still go through the same propose-then-human-confirms step everything else in this
+system does before being saved -- durable repository-level state is exactly the kind
+of thing that shouldn't silently drift from an unreviewed AI summary.
+
+A brand-new session (fresh conversation, or resuming after compaction) gets seeded
+with the current `project_roadmap` -- small, curated, durable -- not a blind `--resume`
+of any prior session_id and not the raw `conversation_summary` transcript either. This
+is also what answers open question 4 below (session persistence): `project_roadmap`
+*is* the persistence mechanism, not a raw session_id staying resumable indefinitely
+across separate `escape-ai` invocations.
+
+## Two consumers
+
+1. **Feature/bug-fix planning refinement** (`esc_exec/planning.py` /
+   `run_planning_interactive`) -- likely the higher-value consumer to prove this
+   against first, since planning work happens far more often than bootstrapping a
+   brand-new repository. Not yet its own plan doc; folding the "which consumer first"
+   question into this one's open questions rather than writing a third doc before
+   anything is designed.
+2. **New/empty-repository scaffolding** (`scaffold-new-or-empty-repository.md`) --
+   the case that originally surfaced this. Depends on this primitive existing;
+   doesn't duplicate its design.
+
+## Non-goals
+
+- Do not build open-ended/unbounded chat -- every conversation this primitive drives
+  is scoped to converging on one specific, named artifact, decided before the
+  conversation starts.
+- Do not auto-apply anything a conversation converges on without an explicit human
+  confirm step, matching every other write path already in this system.
+- Do not invent a "response quality/degradation" signal -- only real, API-reported
+  context-consumption numbers drive the soft/hard thresholds above.
+- Do not let either threshold just cut a conversation off with nothing to show for
+  it -- both must produce a durable `conversation_summary` artifact, even if the
+  conversation didn't fully converge (`status: in-progress` or `abandoned`, not just
+  `converged`).
+- Do not let `project_roadmap` silently drift from an unreviewed AI summary -- an
+  update to it goes through the same propose-then-human-confirms step as everything
+  else this system writes, even though the summarization judgment itself is trusted.
+- Do not conflate `conversation_summary` (ephemeral, safe to eventually archive) with
+  `project_roadmap` (durable, the actual seed for future sessions) -- they have
+  different lifecycles and collapsing them was the mistake this design corrects.
+
+## Open questions
+
+1. Which consumer to build/prove this against first -- planning refinement or
+   scaffolding? Leaning planning (more frequently used), not decided.
+2. Turn-taking UX -- does the human type free-form responses each turn (a real
+   chat loop), or does the AI propose structured options at each turn (closer to
+   `select_menu` than free text)? Not designed.
+3. Exact soft/hard threshold percentages (sketched above as ~60-70% / 90%) -- not
+   verified against a real long conversation yet, just reasoned from the existing
+   90%-dispatch-pause precedent.
+4. Where do `conversation_summary` and `project_roadmap` actually live -- new
+   `.esc-ai/conversations/<id>/summary.yaml` and `.esc-ai/roadmap.yaml`, or folded
+   into the existing `.esc-ai/workflows/` layout? Not decided.
+5. When resuming from `project_roadmap`, does the new session get it as plain prompt
+   text (simplest), or does it need its own schema-validated contract the way
+   task/workspace/adapter/policy are validated today? Not decided.
+6. Is `project_roadmap` truly one-per-repository shared across every conversation
+   type (planning *and* scaffolding both read/update the same document), or does each
+   consumer need its own? Leaning one-per-repository (a single evolving "what is this
+   project and where does it stand" makes sense regardless of which flow updated it
+   last), not decided.
+7. How does `project_roadmap`'s human-review step actually work mechanically -- shown
+   as a diff against the previous version (old stage/direction vs. new), or just the
+   new document in full? A diff seems more useful for catching an AI summary that
+   drifted, but adds real rendering work.
