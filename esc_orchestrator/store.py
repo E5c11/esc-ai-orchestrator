@@ -136,6 +136,20 @@ class Store:
                 (repository_id, proposal["input_digest"], json.dumps(proposal), created_at, timestamp),
             )
 
+    def list_unfinished_onboardings(self) -> list[str]:
+        """
+        Repository IDs with a saved proposal but no applied answers yet -- started but
+        not finished (whether that's mid-interactive-question, or a non-interactive
+        `repository analyze` that never got a matching `repository apply`). Ordered
+        most-recently-touched first, so the most likely thing to resume comes first.
+        """
+        rows = self.connection.execute(
+            "SELECT repository_id FROM onboarding_proposals "
+            "WHERE repository_id NOT IN (SELECT repository_id FROM onboarding_answers) "
+            "ORDER BY updated_at DESC"
+        ).fetchall()
+        return [row["repository_id"] for row in rows]
+
     def get_onboarding_proposal(self, repository_id: str) -> dict[str, Any] | None:
         row = self.connection.execute(
             "SELECT * FROM onboarding_proposals WHERE repository_id=?", (repository_id,)
