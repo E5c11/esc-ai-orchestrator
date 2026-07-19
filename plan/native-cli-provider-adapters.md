@@ -198,6 +198,40 @@ coarse `read`/`edit`/`execute`/`network` categories to that provider tool's actu
 permission surface, following the same deny-by-default discipline as the existing
 OpenCode mapping, not assuming the mapping itself is reusable code.
 
+### Constraints and verified facts on the Codex adapter specifically
+
+Verified live 2026-07-19 against `codex-cli 0.144.1`:
+
+0. **Real, working headless mode, structurally different from Claude Code's.** Codex
+   executes everything as actual shell commands under a sandbox policy
+   (`/bin/bash -lc '...'` observed directly in a live run's `command_execution` item),
+   not discrete typed tool calls (Read/Edit/Bash as separate grants). This means its
+   permission surface is fundamentally coarser: `-s/--sandbox
+   <read-only|workspace-write|danger-full-access>` cannot separately grant "edit
+   without execute" or "execute without edit" the way `tools_for_policy` does for
+   Claude Code/OpenCode — the moment either is allowed, both become possible, because
+   edits happen via shell too. The adapter's policy mapping must say this plainly
+   (`workspace-write` if either `edit` or `execute` is `allow`, else `read-only`;
+   `danger-full-access` never auto-selected), not paper over the gap.
+1. **`-a/--ask-for-approval` is a top-level flag, not an `exec` subcommand flag.**
+   `codex exec -a never ...` fails ("unexpected argument '-a' found"); the working
+   form is `codex -a never exec ...`. Confirmed by hitting the error live, not from
+   docs.
+2. **`--skip-git-repo-check` is required outside a git repository.** Real target
+   repositories are always git repos, so this is a scratch-testing concern more than
+   a real-usage one, but the adapter should still pass it — a repository that somehow
+   isn't a git repo shouldn't hard-fail here.
+3. **stdin must be explicitly closed, not left open/inherited.** Codex's docs say
+   piped stdin gets appended as a `<stdin>` block alongside a positional prompt
+   argument; leaving stdin open (inherited, not explicitly closed) makes the process
+   hang indefinitely waiting for EOF rather than treating "nothing piped" as "no
+   additional input." `subprocess.run(..., stdin=subprocess.DEVNULL)` is required.
+4. **Structured output (`--json`) has a different event schema than Claude Code's**,
+   and no `total_cost_usd` anywhere — only token counts (`input_tokens`,
+   `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens`) in a
+   `turn.completed` event's `usage` block. The final answer comes from the last
+   `item.completed` event whose `item.type` is `"agent_message"`.
+
 ## Non-goals
 
 - Do not rebuild a from-scratch multi-provider client (raw Anthropic/OpenAI API calls
@@ -216,11 +250,34 @@ OpenCode mapping, not assuming the mapping itself is reusable code.
 
 ## Open questions
 
-1. Does Codex CLI have a headless/scriptable mode with native ChatGPT-subscription
-   auth, analogous to Claude Code's plain `-p`? Unverified — needs the same level of
-   confirmation Claude Code got before any Codex adapter work starts.
-2. Is a Gemini CLI adapter worth a fourth option, given Google also ships a first-party
-   agentic CLI? Not investigated yet.
+1. **Resolved 2026-07-19, verified live.** Codex CLI (`codex-cli 0.144.1`) has a real
+   headless mode: `codex exec`. Confirmed both locally (`codex login status` reports
+   "Logged in using ChatGPT", not an API key) and in OpenAI's own docs (ChatGPT
+   sign-in is the default auth path; a separate `--with-api-key`/`--with-access-token`
+   path bills through the OpenAI Platform account instead). Live-verified end to end:
+   `codex -a never exec -s read-only --skip-git-repo-check --json "<prompt>"` executes
+   correctly, reading a file and returning its content via a real shell command
+   (`/bin/bash -lc '...'`) inside the sandbox. See "Constraints and verified facts on
+   the Codex adapter" below for the full detail — architecturally different from
+   Claude Code in a real way (shell-command execution under a sandbox policy, not
+   discrete typed tool calls), not just a drop-in swap.
+2. **Investigated 2026-07-19 — parked, not a fourth option yet.** Google's
+   agentic CLI is not "Gemini CLI" anymore — Gemini CLI stopped serving Google AI
+   Pro/Ultra subscription and free-tier requests on 2026-06-18, replaced by
+   **Antigravity CLI** (`agy`), confirmed via Google's own developer blog. `agy
+   --print` does draw from subscription quota, not API-key billing — confirmed by
+   a real quota-exhaustion error ("Individual quota reached. Please upgrade your
+   subscription...") on one account, and by a successful non-error run on a second,
+   unpaid account. But three independent live attempts (`--mode plan`, default mode,
+   `--dangerously-skip-permissions`) all failed to execute the actual given prompt —
+   `agy --print` consistently investigated its own CLI flags/config instead and
+   answered a meta-question about itself, ending with "If you intended to perform a
+   specific action... please let me know!" This is a reliability finding, not just an
+   unverified gap: the auth/billing question is answered, but the CLI does not
+   currently appear to reliably execute a given headless task at all (`agy` version
+   1.1.4). Revisit only after that specific failure mode is understood or a newer
+   version is confirmed to fix it — do not build an Antigravity adapter on top of
+   this without re-verifying execution reliability specifically, not just auth.
 3. Exact shape of each adapter's own policy-to-permission mapping — sketched as "needs
    one per adapter" here, not designed in detail.
 4. How does escape-ai surface subscription usage/cost information to the user, given
