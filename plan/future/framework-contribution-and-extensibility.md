@@ -8,7 +8,7 @@ verification gates — instead of an unstructured "read CONTRIBUTING.md and hope
 
 ## Why this is a separate plan
 
-[`cohesive-system-integration-and-onboarding.md`](./cohesive-system-integration-and-onboarding.md)
+[`cohesive-system-integration-and-onboarding.md`](../active/cohesive-system-integration-and-onboarding.md)
 is about *using* Escape AI: onboarding a repository, planning and executing work
 through the orchestrator. This plan is about *growing* the architecture framework
 itself — a different audience (contributors, not consumers) and a different concern

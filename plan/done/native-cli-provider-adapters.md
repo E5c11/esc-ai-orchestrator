@@ -1,6 +1,6 @@
 # Native CLI Provider Adapters — Plan
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-07-18
 **Revised:** 2026-07-18 — added the subscription/API-key dual-route design; OpenCode is
 not being cut, its role is being narrowed to a specific, still-necessary path.

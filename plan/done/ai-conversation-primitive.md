@@ -1,6 +1,6 @@
 # AI Conversation Primitive — Plan
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-07-20
 **Objective:** Give escape-ai a genuine multi-turn AI conversation capability -- not
 another one-shot batched call -- usable wherever a bounded decision needs real
@@ -148,17 +148,26 @@ is also what answers open question 4 below (session persistence): `project_roadm
 *is* the persistence mechanism, not a raw session_id staying resumable indefinitely
 across separate `escape-ai` invocations.
 
-## Two consumers
+## Consumer
 
-1. **Feature/bug-fix planning refinement** (`esc_exec/planning.py` /
-   `run_planning_interactive`) -- likely the higher-value consumer to prove this
-   against first, since planning work happens far more often than bootstrapping a
-   brand-new repository. Not yet its own plan doc; folding the "which consumer first"
-   question into this one's open questions rather than writing a third doc before
-   anything is designed.
-2. **New/empty-repository scaffolding** (`scaffold-new-or-empty-repository.md`) --
-   the case that originally surfaced this. Depends on this primitive existing;
-   doesn't duplicate its design.
+**Built 2026-07-20: feature/bug-fix planning refinement**
+(`run_planning_conversation_interactive` in `esc_orchestrator/escape_ai_cli.py`,
+`esc_exec/conversation.py`, `esc_exec/roadmap.py`) -- proven against planning
+refinement first, since it happens far more often than bootstrapping a brand-new
+repository. Provider-gated, optional, offered after drafting a single-repository
+plan; roadmap updates go through an explicit confirm. Live smoke-tested against the
+real `claude` CLI.
+
+**No longer a second consumer.** New/empty-repository scaffolding
+(`scaffold-new-or-empty-repository.md`) originally surfaced this primitive, but that
+doc was resolved 2026-07-20 to *not* need a conversation at all -- scaffolding a new
+project from nothing is a solved problem external wizards (`create-next-app`, Spring
+Initializr, ...) already handle deterministically; an AI conversation reinventing
+that decision would be strictly worse (less deterministic, costs tokens, drifts from
+ecosystem convention) and contradicts this system's own premise. See that doc's
+"Resolved 2026-07-20" note. This primitive stays a one-consumer mechanism unless a
+genuine second use case shows up -- it was never scaffolding-specific in its design,
+just in how it was first motivated.
 
 ## Non-goals
 
@@ -182,26 +191,28 @@ across separate `escape-ai` invocations.
 
 ## Open questions
 
-1. Which consumer to build/prove this against first -- planning refinement or
-   scaffolding? Leaning planning (more frequently used), not decided.
-2. Turn-taking UX -- does the human type free-form responses each turn (a real
-   chat loop), or does the AI propose structured options at each turn (closer to
-   `select_menu` than free text)? Not designed.
-3. Exact soft/hard threshold percentages (sketched above as ~60-70% / 90%) -- not
-   verified against a real long conversation yet, just reasoned from the existing
-   90%-dispatch-pause precedent.
-4. Where do `conversation_summary` and `project_roadmap` actually live -- new
-   `.esc-ai/conversations/<id>/summary.yaml` and `.esc-ai/roadmap.yaml`, or folded
-   into the existing `.esc-ai/workflows/` layout? Not decided.
+1. ~~Which consumer to build/prove this against first~~ -- resolved: planning
+   refinement, built 2026-07-20 (see "Consumer" above). Scaffolding is no longer a
+   second consumer at all (see that section) -- this question no longer applies.
+2. ~~Turn-taking UX~~ -- resolved: free-form chat, built as `ask()` calls in
+   `run_planning_conversation_interactive`'s loop, not structured options.
+3. Exact soft/hard threshold percentages (sketched above as ~60-70% / 90%, implemented
+   as exactly 0.65/0.90) -- live smoke-tested for basic correctness, but not yet
+   against a real conversation long enough to actually approach either threshold.
+   Turn count as a secondary "getting unwieldy" nudge (mentioned above) is also still
+   unimplemented -- only the percentage thresholds exist in code today.
+4. ~~Where do `conversation_summary` and `project_roadmap` actually live~~ -- resolved:
+   exactly `.esc-ai/conversations/<id>/summary.yaml` and `.esc-ai/roadmap.yaml`, built.
 5. When resuming from `project_roadmap`, does the new session get it as plain prompt
    text (simplest), or does it need its own schema-validated contract the way
-   task/workspace/adapter/policy are validated today? Not decided.
-6. Is `project_roadmap` truly one-per-repository shared across every conversation
-   type (planning *and* scaffolding both read/update the same document), or does each
-   consumer need its own? Leaning one-per-repository (a single evolving "what is this
-   project and where does it stand" makes sense regardless of which flow updated it
-   last), not decided.
+   task/workspace/adapter/policy are validated today? Built as plain prompt text (see
+   `_roadmap_context_text` in `conversation.py`) -- still no formal schema; revisit
+   only if that starts causing real problems, not speculatively.
+6. ~~Is `project_roadmap` truly one-per-repository~~ -- moot now that there's only one
+   consumer; built as one-per-repository regardless, since that's still the right
+   shape for a single evolving "what is this project and where does it stand."
 7. How does `project_roadmap`'s human-review step actually work mechanically -- shown
    as a diff against the previous version (old stage/direction vs. new), or just the
-   new document in full? A diff seems more useful for catching an AI summary that
-   drifted, but adds real rendering work.
+   new document in full? Still unresolved -- built as neither, actually: the current
+   `confirm()` prompt shows nothing before asking yes/no. Worth fixing before this
+   sees real use; a diff is probably still the right answer.

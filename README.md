@@ -129,7 +129,7 @@ resolved from the task's declared repository.
 
 The next development phase composes the architecture framework, execution framework,
 and orchestrator into unified repository onboarding and cross-repository planning. See
-[`plan/cohesive-system-integration-and-onboarding.md`](plan/cohesive-system-integration-and-onboarding.md).
+[`plan/active/cohesive-system-integration-and-onboarding.md`](plan/active/cohesive-system-integration-and-onboarding.md).
 
 ## Test
 

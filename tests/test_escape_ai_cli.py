@@ -1190,7 +1190,7 @@ class ProviderTests(unittest.TestCase):
 
     def test_provider_auth_dispatch_rejects_gemini_entirely(self):
         # gemini isn't in KNOWN_PROVIDERS anymore (removed 2026-07-19, see
-        # plan/reintroduce-gemini-provider.md) -- argparse itself rejects it as an
+        # plan/future/reintroduce-gemini-provider.md) -- argparse itself rejects it as an
         # invalid choice before ever reaching _dispatch_provider, for any route.
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1249,7 +1249,7 @@ class ProviderTests(unittest.TestCase):
 
     def test_prompt_provider_setup_interactive_connects_api_key_route(self):
         # No real provider is currently known-but-not-subscription-capable (gemini
-        # was removed -- see plan/reintroduce-gemini-provider.md), so this exercises
+        # was removed -- see plan/future/reintroduce-gemini-provider.md), so this exercises
         # that branch (skip the route sub-prompt, go straight to api-key) via a
         # synthetic provider patched into both this module and esc_exec.registry
         # (set_provider validates against its own copy of KNOWN_PROVIDERS).

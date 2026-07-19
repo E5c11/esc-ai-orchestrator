@@ -1,6 +1,6 @@
 # Onboarding Answer Detection and Suggestion — Plan
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-07-19
 **Objective:** Stop asking a user to type a free-text answer to a semantic onboarding
 question when the answer is mechanically discoverable, and where it genuinely isn't,

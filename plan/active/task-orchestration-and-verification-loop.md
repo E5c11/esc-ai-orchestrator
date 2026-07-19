@@ -1,6 +1,6 @@
 # Task Orchestration and Verification Loop — Plan
 
-**Status:** Proposed
+**Status:** Active
 **Date:** 2026-07-19
 **Objective:** Close the loop between "escape-ai prepares a bounded task" and "escape-ai
 prepares the next one" — a real task-level dependency graph (not a straight line),

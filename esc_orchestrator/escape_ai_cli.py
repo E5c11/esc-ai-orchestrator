@@ -47,7 +47,7 @@ MENU = [
 
 NOT_YET_IMPLEMENTED = (
     "Not yet implemented -- this is a later phase of the Escape AI plan "
-    "(see plan/cohesive-system-integration-and-onboarding.md). Only repository "
+    "(see plan/active/cohesive-system-integration-and-onboarding.md). Only repository "
     "onboarding, planning new work, and resuming active work are wired up so far."
 )
 
@@ -339,7 +339,7 @@ def default_adapter(provider: dict[str, Any]) -> dict[str, Any]:
     route resolves to whichever first-party adapter that provider has (claude ->
     ClaudeCodeAdapter, openai -> CodexAdapter); every api-key route goes through
     OpenCode today. (gemini isn't currently offered at all -- see
-    plan/reintroduce-gemini-provider.md -- but this function still falls back to
+    plan/future/reintroduce-gemini-provider.md -- but this function still falls back to
     OpenCode for any unrecognized id/route combination, matching KNOWN_PROVIDERS'
     deny-by-default discipline rather than assuming only claude/openai ever appear
     here.)
@@ -815,7 +815,7 @@ def suggest_answers_via_provider(
     registry: Path, repository_path: Path, purpose_component_ids: list[str], frameworks_component_ids: list[str],
 ) -> dict[str, dict[str, Any]]:
     """
-    Tier 2 of plan/onboarding-answer-detection-and-suggestion.md, scoped to the
+    Tier 2 of plan/done/onboarding-answer-detection-and-suggestion.md, scoped to the
     Claude Code (subscription) route only for now -- the one adapter actually built
     and verified live this session. Returns {} immediately, with zero cost, whenever
     no provider is connected or the connected one isn't claude/subscription; this is
@@ -993,7 +993,7 @@ def run_planning_conversation_interactive(
     """
     Optional AI-assisted back-and-forth to think through scope before the static
     scope_boundary/completion_conditions/rollout_needs questions are asked --
-    Consumer 1 of plan/ai-conversation-primitive.md, proven against planning
+    Consumer 1 of plan/done/ai-conversation-primitive.md, proven against planning
     refinement first since it's the more frequently used flow (over scaffolding a
     brand-new repository).
 
