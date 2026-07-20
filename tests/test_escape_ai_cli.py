@@ -434,10 +434,10 @@ class InteractiveOnboardingTests(unittest.TestCase):
                 "Owns content.",      # purpose
                 "1",                  # confirm apply
                 "",                   # blank -> jump into planning, pre-filled with this repo
-                "1",                  # work type: feature
+                # no "Repositories:" prompt -- pre-filled with the repo just onboarded
                 "Add CSV export.",    # objective
                 "feature-export",     # initiative id
-                # no "Repositories:" prompt -- pre-filled with the repo just onboarded
+                "1",                  # work type: feature
                 "content",            # components question answer
                 "No admin UI.",       # scope_boundary
                 "Export works",       # completion_conditions
@@ -1005,10 +1005,10 @@ class PlanningInteractiveTests(unittest.TestCase):
             run(["repository", "apply", "repo"])
 
             responses = iter([
-                "1",                     # work type: feature
+                "repo",                  # repositories
                 "Add CSV export.",       # objective
                 "feature-export",        # initiative id
-                "repo",                  # repositories
+                "1",                     # work type: feature
                 "content",               # components question answer
                 "No admin UI.",          # scope_boundary
                 "Export works",          # completion_conditions
@@ -1057,7 +1057,7 @@ class PlanningInteractiveTests(unittest.TestCase):
                 ".esc-ai/local-architecture/background-jobs.md"
             ]
             responses = iter([
-                "1", "Add background jobs.", "feature-jobs", "repo", "content",
+                "repo", "Add background jobs.", "feature-jobs", "1", "content",
                 "No admin UI.", "Jobs run reliably", "", "1",
             ])
             original_input = builtins.input
@@ -1102,7 +1102,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             self._onboard(root, registry, repository_dir)
 
             responses = iter([
-                "2", "Fix the broken login page.", "login-fix", "repo",
+                "repo", "Fix the broken login page.", "login-fix", "2",
                 "content", "No new auth providers.", "Login works again.", "",
                 "1",  # confirm apply -- no drift-check prompt in between
             ])
@@ -1138,7 +1138,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             }
 
             responses = iter([
-                "2", "Fix the broken login page.", "login-fix", "repo",
+                "repo", "Fix the broken login page.", "login-fix", "2",
                 "2",  # decline "Talk through this plan with AI first?"
                 "content", "No new auth providers.", "Login works again.", "",
                 "1",  # reclassify as `feature`
@@ -1177,7 +1177,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             }
 
             responses = iter([
-                "2", "Fix the broken login page.", "login-fix", "repo",
+                "repo", "Fix the broken login page.", "login-fix", "2",
                 "2",  # decline "Talk through this plan with AI first?"
                 "content", "No new auth providers.", "Login works again.", "",
                 "2",  # keep it as `fix`
@@ -1213,7 +1213,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             }
 
             responses = iter([
-                "2", "Fix the broken login page.", "login-fix", "repo",
+                "repo", "Fix the broken login page.", "login-fix", "2",
                 "2",  # decline "Talk through this plan with AI first?"
                 "content", "No new auth providers.", "Login works again.", "",
                 "1",  # confirm apply -- no drift-check prompt in between
@@ -1232,6 +1232,254 @@ class PlanningInteractiveTests(unittest.TestCase):
             self.assertNotIn("grown from", buffer.getvalue())
             task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "login-fix"
             self.assertIn("**Work type:** fix", (task_dir / "README.md").read_text())
+
+    def test_chat_about_it_is_not_offered_for_multi_repository_plans(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            second_dir = root / "repo-two-checkout"
+            _make_gradle_repository(repository_dir)
+            _make_gradle_repository(second_dir)
+            store = Store(root / "db.sqlite")
+            self._onboard(root, registry, repository_dir)
+            add_route(registry, "repositories", "repo-two", second_dir)
+
+            responses = iter([
+                "repo,repo-two", "Add a shared audit log.", "audit-log", "1",  # work type: feature
+                "content", "content", "No admin UI.", "Log entries recorded", "",
+                "2",  # decline apply -- just checking the menu offered here
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    cli.run_planning_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+
+            self.assertNotIn(cli.CHAT_ABOUT_IT_OPTION, buffer.getvalue())
+
+    def test_form_conversation_result_skips_already_answered_static_questions(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+            self._onboard(root, registry, repository_dir)
+            set_provider(registry, "claude", "subscription")
+
+            original = cli.run_form_driven_planning_conversation_interactive
+            cli.run_form_driven_planning_conversation_interactive = lambda registry, repository_path, objective: {
+                "work_type": "feature",
+                "objective": "Add background job scheduling.",
+                "components": ["content"],
+                "scope_boundary": "No cron UI.",
+                "completion_conditions": ["Jobs run on schedule"],
+                "rollout_needs": "Feature-flagged.",
+            }
+
+            responses = iter([
+                "repo", "Add jobs.", "feature-jobs",
+                str(len(cli.WORK_TYPES) + 1),  # "chat about it"
+                "1",  # confirm apply -- no other question prompts should be consumed
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_planning_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+                cli.run_form_driven_planning_conversation_interactive = original
+
+            self.assertEqual(0, code)
+            task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-jobs"
+            readme = (task_dir / "README.md").read_text()
+            self.assertIn("**Work type:** feature", readme)
+            self.assertIn("Add background job scheduling.", readme)
+            self.assertIn("Jobs run on schedule", readme)
+            self.assertIn("Feature-flagged.", readme)
+
+    def test_form_conversation_missing_a_field_falls_back_to_the_plain_question(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+            self._onboard(root, registry, repository_dir)
+            set_provider(registry, "claude", "subscription")
+
+            original = cli.run_form_driven_planning_conversation_interactive
+            cli.run_form_driven_planning_conversation_interactive = lambda registry, repository_path, objective: {
+                "work_type": "feature",
+                "objective": "Add background job scheduling.",
+                # components/scope_boundary/completion_conditions/rollout_needs never captured
+            }
+
+            responses = iter([
+                "repo", "Add jobs.", "feature-jobs", str(len(cli.WORK_TYPES) + 1),  # "chat about it"
+                "content", "No cron UI.", "Jobs run on schedule", "",  # the fallback static questions
+                "1",  # confirm apply
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_planning_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+                cli.run_form_driven_planning_conversation_interactive = original
+
+            self.assertEqual(0, code)
+            task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-jobs"
+            readme = (task_dir / "README.md").read_text()
+            self.assertIn("Jobs run on schedule", readme)
+
+    def test_chat_about_it_with_no_work_type_confirmed_falls_back_to_the_menu(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+            self._onboard(root, registry, repository_dir)
+            set_provider(registry, "claude", "subscription")
+
+            original = cli.run_form_driven_planning_conversation_interactive
+            cli.run_form_driven_planning_conversation_interactive = lambda registry, repository_path, objective: None
+
+            responses = iter([
+                "repo", "Add jobs.", "feature-jobs", str(len(cli.WORK_TYPES) + 1),  # "chat about it"
+                "1",  # fallback five-item menu: feature
+                "2",  # decline "Talk through this plan with AI first?" (old scope conversation, still offered)
+                "content", "No cron UI.", "Jobs run on schedule", "",
+                "1",  # confirm apply
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_planning_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+                cli.run_form_driven_planning_conversation_interactive = original
+
+            self.assertEqual(0, code)
+            task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-jobs"
+            self.assertIn("**Work type:** feature", (task_dir / "README.md").read_text())
+
+
+class RunFormDrivenPlanningConversationInteractiveTests(unittest.TestCase):
+    def test_no_provider_connected_returns_none_immediately(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                form = cli.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
+        self.assertIsNone(form)
+        self.assertIn("pick a work type from the list instead", buffer.getvalue())
+
+    def test_converges_and_confirmed_returns_the_full_form(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            generate_gradle_manifests(repository_dir)
+            manifest_path = component_manifest_path(repository_dir, "content")
+            manifest = load_yaml(manifest_path)
+            manifest["component"]["purpose"] = "Owns content."
+            write_yaml(manifest_path, manifest)
+            generate_indexes(repository_dir)
+            set_provider(registry, "claude", "subscription")
+
+            original = cli.suggest_form_turn
+            cli.suggest_form_turn = lambda client, repository_path, message, objective, suggested_components, resume_session_id=None: {
+                "reply": "Got it, that's everything.",
+                "form": {
+                    "work_type": "feature", "objective": "Add jobs.", "components": ["content"],
+                    "scope_boundary": "No UI.", "completion_conditions": ["Jobs run"], "rollout_needs": "",
+                },
+                "session_id": "ses-1", "threshold": None,
+            }
+            responses = iter(["1"])  # confirm "Use this and finish up?"
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                form = cli.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
+            finally:
+                builtins.input = original_input
+                cli.suggest_form_turn = original
+
+        self.assertEqual("feature", form["work_type"])
+        self.assertEqual(["Jobs run"], form["completion_conditions"])
+
+    def test_blank_line_early_stops_with_whatever_was_captured(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            generate_gradle_manifests(repository_dir)
+            manifest_path = component_manifest_path(repository_dir, "content")
+            manifest = load_yaml(manifest_path)
+            manifest["component"]["purpose"] = "Owns content."
+            write_yaml(manifest_path, manifest)
+            generate_indexes(repository_dir)
+            set_provider(registry, "claude", "subscription")
+
+            original = cli.suggest_form_turn
+            cli.suggest_form_turn = lambda client, repository_path, message, objective, suggested_components, resume_session_id=None: {
+                "reply": "What kind of change is this?", "form": {}, "session_id": "ses-1", "threshold": None,
+            }
+            responses = iter([""])  # blank line -- stop immediately
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                form = cli.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
+            finally:
+                builtins.input = original_input
+                cli.suggest_form_turn = original
+
+        self.assertIsNone(form)
+
+    def test_hard_threshold_stops_the_loop(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            generate_gradle_manifests(repository_dir)
+            manifest_path = component_manifest_path(repository_dir, "content")
+            manifest = load_yaml(manifest_path)
+            manifest["component"]["purpose"] = "Owns content."
+            write_yaml(manifest_path, manifest)
+            generate_indexes(repository_dir)
+            set_provider(registry, "claude", "subscription")
+
+            original = cli.suggest_form_turn
+            cli.suggest_form_turn = lambda client, repository_path, message, objective, suggested_components, resume_session_id=None: {
+                "reply": "Still talking...", "form": {"work_type": "feature"}, "session_id": "ses-1", "threshold": "hard",
+            }
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    form = cli.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
+            finally:
+                cli.suggest_form_turn = original
+
+        self.assertEqual({"work_type": "feature"}, form)
+        self.assertIn("wrapping up now", buffer.getvalue())
 
 
 class ConfirmWorkTypeDriftInteractiveTests(unittest.TestCase):

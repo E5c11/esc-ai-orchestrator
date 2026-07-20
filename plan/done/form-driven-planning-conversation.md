@@ -1,6 +1,6 @@
 # Form-Driven Planning Conversation — Plan
 
-**Status:** Active
+**Status:** Implemented
 **Date:** 2026-07-20
 **Objective:** Replace planning's fragmented sequence of separate static questions
 (work_type menu, objective prompt, components prompt, scope_boundary prompt,
@@ -143,9 +143,10 @@ All three resolved 2026-07-20:
 1. ~~Exact trailer format/marker~~ -- resolved: a literal `---FORM---` line,
    then a fenced JSON block with the form fields (`null`/omitted for anything
    not yet known). Code splits the response on the marker -- everything before
-   is the human-visible reply, everything after is parsed. Still genuinely
-   unverified until task 6 runs against the real `claude` CLI -- this is a
-   concrete starting format to build and test against, not a proven one.
+   is the human-visible reply, everything after is parsed. **Live-verified**
+   (task 6): held up correctly across two real `--resume` turns, including a
+   mid-conversation revision (work_type changed from `feature` to `fix` once
+   new information came in), not just a single accumulate-only pass.
 2. ~~Same trailer mode after "keep talking"~~ -- resolved: yes, throughout, no
    mode-switching logic.
 3. ~~Does `components` need the conversation to ask about it~~ -- resolved: the
@@ -154,22 +155,47 @@ All three resolved 2026-07-20:
 
 ## Task breakdown (ordered by dependency)
 
-1. Reorder `run_planning_interactive`'s question sequence (repositories ->
-   objective -> initiative ID -> work-type menu). No dependencies -- pure
-   reordering of existing prompts, no new behavior yet.
-2. Add the 6th work-type menu option and its provider gate (same pattern
-   `suggest_answers_via_provider`/the module-resolution turn already use).
-   Depends on (1).
-3. Per-turn structured trailer: prompt instruction, parser (fails open),
-   marker format resolved (open question 1). New function in
-   `esc_exec/conversation.py`, alongside `suggest_unresolved_components`/
-   `suggest_groundable_answers_turn`. No dependencies -- can be built and
-   tested independently of the CLI wiring.
-4. Wire (3) into a new form-driven conversation loop, gated single-repo only,
-   replacing the offer point for "chat about it" from (2). Depends on (2), (3).
-5. Fallback to existing plain questions for any required field the trailer
-   never confirmed. Depends on (4).
-6. Live verification against the real `claude` CLI that the trailer format
-   actually holds up turn over turn (matches how every other AI-facing piece
-   in this codebase was verified before being trusted, not just unit-tested
-   against a fake client). Depends on (4).
+All six done 2026-07-20:
+
+1. ~~Reorder `run_planning_interactive`'s question sequence~~ -- done:
+   repositories -> objective -> initiative ID -> work-type menu.
+2. ~~Add the 6th work-type menu option and its provider gate~~ -- done,
+   `CHAT_ABOUT_IT_OPTION`, appended to the menu only when exactly one
+   repository was given (never offered, not offered-then-rejected, for
+   multi-repo plans -- resolved cleanly since repositories are now known
+   before the menu is built).
+3. ~~Per-turn structured trailer~~ -- done as `suggest_form_turn` in
+   `esc_exec/conversation.py`, plus `FORM_TRAILER_MARKER`/`FORM_FIELDS`. Also
+   propagates `run_turn`'s real `threshold` (hard/soft/None) through, past
+   this doc's original design -- the same context-budget safety net
+   `run_planning_conversation_interactive` already has, so this conversation
+   can't run unbounded either (not explicitly designed here, added because
+   skipping it would have been a real gap, not a deliberate scope cut). 11
+   tests.
+4. ~~Wire (3) into a new form-driven conversation loop~~ -- done as
+   `run_form_driven_planning_conversation_interactive`, single-repo only.
+   Ends on: every required field filled *and* human confirms; blank line
+   early (whatever was captured is used); or hard threshold. 4 tests.
+5. ~~Fallback to existing plain questions for any required field the trailer
+   never confirmed~~ -- done: the conversation's result pre-seeds `answers`,
+   and the existing static-question loop in `run_planning_interactive` skips
+   anything already present rather than re-asking. The old scope-refinement
+   conversation and the work-type drift check are both skipped when the form
+   conversation ran (redundant to re-litigate what it just settled) -- not
+   originally specified this precisely in this doc's design section, decided
+   during implementation once both checks already existed in the flow this
+   plan was reordering. 4 tests (skip-static-questions, missing-field
+   fallback, multi-repo hides the option, no-work-type-confirmed falls back
+   to the 5-item menu).
+6. ~~Live verification against the real `claude` CLI~~ -- done, two real
+   `--resume` turns against `claude-code` (subscription route): turn 1
+   correctly split reply from trailer and captured `work_type`/`objective`/
+   `components`; turn 2, given new information ("it's a bug fix actually --
+   the button exists but is broken"), correctly *revised* `work_type` from
+   `feature` to `fix`, refined the objective text, and picked up
+   `completion_conditions` from natural language -- confirms the trailer
+   format holds up turn over turn and that revision (not just accumulation)
+   works as intended, not just unit-tested against a fake client.
+
+Both full suites green throughout: execution-framework 334 -> 345,
+orchestrator 115 -> 123.

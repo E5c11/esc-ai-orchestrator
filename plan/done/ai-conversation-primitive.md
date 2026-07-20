@@ -185,9 +185,23 @@ refinement is; the module-resolution turn's answer is persisted into the
 repository manifest (`resolved_components`) so a later analyze/apply never needs
 to re-run it.
 
+**Built 2026-07-20: form-driven planning conversation** (`suggest_form_turn` in
+`esc_exec/conversation.py`, `run_form_driven_planning_conversation_interactive` in
+`esc_orchestrator/escape_ai_cli.py`) -- the third consumer, from
+`plan/done/form-driven-planning-conversation.md`. A real functional difference
+from the other two: instead of one bounded suggestion call (Tier 2) or a fixed
+two-turn sequence (module resolution then purpose/frameworks), this is genuinely
+open-ended free-form chat, ending itself once a `---FORM---` trailer (parsed every
+turn, stripped from what the human sees) reports every required field filled and
+the human confirms -- or when the human sends a blank line early, or the hard
+context threshold is hit. Live-verified across two real `--resume` turns,
+including the model *revising* an earlier-captured field (`work_type` changed from
+`feature` to `fix`) once new information came in mid-conversation, not just
+accumulating monotonically.
+
 This primitive is no longer a one-consumer mechanism -- it was never
 scaffolding-specific in its design, just in how it was first motivated, and now has
-two real, independently-justified consumers.
+three real, independently-justified consumers.
 
 ## Non-goals
 

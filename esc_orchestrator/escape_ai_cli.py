@@ -17,7 +17,8 @@ from esc_exec.claude_code_adapter import (
 )
 from esc_exec.codex_adapter import codex_auth_status, codex_cli_available
 from esc_exec.conversation import (
-    compact_conversation, run_turn, suggest_groundable_answers_turn, suggest_unresolved_components,
+    compact_conversation, run_turn, suggest_form_turn, suggest_groundable_answers_turn,
+    suggest_unresolved_components,
 )
 from esc_exec.dependencies import validate_dependency_graph
 from esc_exec.indexing import validate_indexes
@@ -57,6 +58,12 @@ NOT_YET_IMPLEMENTED = (
     "(see plan/active/cohesive-system-integration-and-onboarding.md). Only repository "
     "onboarding, planning new work, and resuming active work are wired up so far."
 )
+
+# plan/active/form-driven-planning-conversation.md -- only ever offered for
+# single-repository plans (a form converging on one work_type/scope_boundary
+# doesn't map cleanly onto per-repository differences in a multi-repo plan),
+# so it's appended to the work-type menu conditionally, not a WORK_TYPES value.
+CHAT_ABOUT_IT_OPTION = "Not sure -- let's chat about it"
 
 DEFAULT_OPENCODE_SERVER = "http://127.0.0.1:4097"
 
@@ -1369,29 +1376,125 @@ def run_planning_conversation_interactive(
     return last_text
 
 
+def run_form_driven_planning_conversation_interactive(registry: Path, repository_path: Path, objective: str) -> dict[str, Any] | None:
+    """
+    plan/active/form-driven-planning-conversation.md -- the "chat about it"
+    work-type option, offered only for single-repository plans (see
+    CHAT_ABOUT_IT_OPTION). Consumer 2 of plan/done/ai-conversation-primitive.md's
+    run_turn.
+
+    Provider-gated the same "no wall" way as run_planning_conversation_
+    interactive -- returns None immediately, at zero cost, whenever no claude/
+    subscription provider is connected; the caller falls back to the plain
+    five-item work-type menu.
+
+    Ends when every required field (work_type, objective, completion_conditions)
+    is filled *and* the human confirms using it, when the human sends a blank
+    line early (whatever the trailer captured so far is used, same "never trap
+    someone in a mandatory Q&A" discipline as every other conversation in this
+    system), or when the hard context threshold is hit (forced stop, same
+    two-tier safety net run_planning_conversation_interactive already uses).
+
+    Returns the accumulated form dict (only ever containing keys the model was
+    genuinely confident about, per suggest_form_turn), or None if no
+    conversation happened at all. The caller falls back to the exact existing
+    plain question for anything missing from it.
+    """
+    provider = active_provider(registry)
+    if provider != {"id": "claude", "route": "subscription"}:
+        print("No AI provider connected -- pick a work type from the list instead.")
+        return None
+
+    suggested_components = [match.component_id for match in route_objective(repository_path, objective)]
+    client = ClaudeCodeClient()
+    session_id: str | None = None
+    form: dict[str, Any] = {}
+    message = f"I want to plan this: {objective}"
+
+    print_question("Let's talk through this -- send a blank line anytime to stop and use whatever's been captured so far.")
+    while True:
+        turn = suggest_form_turn(client, repository_path, message, objective, suggested_components, resume_session_id=session_id)
+        session_id = turn["session_id"] or session_id
+        if turn["reply"]:
+            print_question(turn["reply"])
+        form.update(turn["form"])
+
+        if turn["threshold"] == "hard":
+            print("This conversation has used most of the model's context window -- wrapping up now.")
+            break
+        if turn["threshold"] == "soft":
+            print("(This conversation is getting long -- consider wrapping up soon.)")
+
+        if all(form.get(field) for field in ("work_type", "objective", "completion_conditions")):
+            print(f"\nLooks like that's everything needed: work_type={form['work_type']}, objective={form['objective']}")
+            if confirm("Use this and finish up?"):
+                break
+
+        try:
+            message = ask("You (blank line to finish):").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not message:
+            break
+
+    return form or None
+
+
 def run_planning_interactive(store: Store, registry: Path, prefilled_repository_id: str | None = None) -> int:
     """
     prefilled_repository_id skips the "Repositories:" question entirely --
     used when arriving here straight from a just-finished onboarding (see
     run_onboarding_interactive's post-apply prompt) so momentum isn't lost
     re-typing/re-selecting the repo you were just looking at.
-    """
-    choice = select_menu(render_work_types(), WORK_TYPES)
-    if choice is None:
-        return 0
-    work_type = WORK_TYPES[choice]
 
+    Repositories/objective/initiative ID are asked *before* the work-type menu
+    (plan/active/form-driven-planning-conversation.md design section 1,
+    reordered from repositories-last) so the menu can offer a 6th option --
+    CHAT_ABOUT_IT_OPTION, single-repository plans only -- that talks through
+    work_type (and, along the way, objective/components/scope_boundary/
+    completion_conditions/rollout_needs) instead of picking blind. draft_plan
+    itself never actually uses work_type for routing/question-generation (only
+    validates and stores it), so this reordering needed no changes there.
+    """
     try:
-        objective = ask("Objective:").strip()
-        initiative_id = ask("Initiative/task ID (a short slug, e.g. feature-user-export):").strip()
         if prefilled_repository_id:
             repository_values = [prefilled_repository_id]
         else:
             repos_raw = ask("Repositories (comma-separated IDs or paths):").strip()
             repository_values = [value.strip() for value in repos_raw.split(",") if value.strip()]
+        objective = ask("Objective:").strip()
+        initiative_id = ask("Initiative/task ID (a short slug, e.g. feature-user-export):").strip()
     except (EOFError, KeyboardInterrupt):
         print("\nCancelled -- nothing was written.")
         return 0
+
+    work_type_options = list(WORK_TYPES)
+    if len(repository_values) == 1:
+        work_type_options.append(CHAT_ABOUT_IT_OPTION)
+    choice = select_menu(render_work_types(), work_type_options)
+    if choice is None:
+        return 0
+
+    form: dict[str, Any] | None = None
+    if work_type_options[choice] == CHAT_ABOUT_IT_OPTION:
+        try:
+            _, repository_path_for_chat = resolve_repository(repository_values[0], registry)
+        except (KeyError, FileNotFoundError) as exc:
+            print(f"Could not resolve this repository: {exc}")
+            return 1
+        form = run_form_driven_planning_conversation_interactive(registry, repository_path_for_chat, objective)
+        if form and form.get("work_type"):
+            work_type = form["work_type"]
+        else:
+            fallback_choice = select_menu(render_work_types(), list(WORK_TYPES))
+            if fallback_choice is None:
+                return 0
+            work_type = WORK_TYPES[fallback_choice]
+        if form and form.get("objective"):
+            objective = form["objective"]
+    else:
+        work_type = work_type_options[choice]
 
     try:
         draft = draft_plan(store, registry, initiative_id, work_type, objective, repository_values)
@@ -1400,7 +1503,8 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
         return 1
     print(render_plan_draft(draft))
 
-    if len(draft["repositories"]) == 1:
+    used_form_conversation = bool(form)
+    if len(draft["repositories"]) == 1 and not used_form_conversation:
         try:
             repository_id, repository_path = resolve_repository(draft["repositories"][0], registry)
             run_planning_conversation_interactive(registry, repository_path, repository_id, initiative_id, objective)
@@ -1408,12 +1512,26 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
             print("\nCancelled the conversation -- continuing with the plan questions.")
 
     answers: dict[str, Any] = {}
+    if form:
+        # Pre-seed from the conversation -- the loop below skips re-asking
+        # anything already present here (plan/active/form-driven-planning-
+        # conversation.md design section 3's fallback discipline).
+        if form.get("components"):
+            answers.setdefault("components", {})[draft["repositories"][0]] = form["components"]
+        for field in ("scope_boundary", "completion_conditions", "rollout_needs"):
+            if form.get(field):
+                answers[field] = form[field]
+
     try:
         for question in draft["questions"]:
             if question["field"] == "components":
                 repository_id = question["repository"]
+                if repository_id in answers.get("components", {}):
+                    continue
                 value = ask(question["prompt"]).strip()
                 answers.setdefault("components", {})[repository_id] = [item.strip() for item in value.split(",") if item.strip()]
+            elif question["field"] in answers:
+                continue
             elif question["field"] == "completion_conditions":
                 value = ask(question["prompt"]).strip()
                 answers["completion_conditions"] = [item.strip() for item in value.split(",") if item.strip()]
@@ -1425,16 +1543,20 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
 
     store.save_plan_pending_answers(initiative_id, answers)
 
-    try:
-        _, repository_path_for_check = resolve_repository(draft["repositories"][0], registry)
-        confirmed_work_type = confirm_work_type_drift_interactive(
-            registry, repository_path_for_check, work_type, objective,
-            answers.get("scope_boundary", ""), answers.get("completion_conditions", []),
-        )
-    except (KeyError, FileNotFoundError):
-        confirmed_work_type = work_type  # repo no longer resolvable -- skip the check, don't block planning over it
-    if confirmed_work_type != work_type:
-        store.save_plan_draft(initiative_id, confirmed_work_type, objective, draft["repositories"], draft["routing"], draft["questions"])
+    if not used_form_conversation:
+        # Redundant to re-litigate immediately after a conversation that just
+        # freshly settled work_type through real back-and-forth -- only runs
+        # for the deterministic five-item-menu path, same as before.
+        try:
+            _, repository_path_for_check = resolve_repository(draft["repositories"][0], registry)
+            confirmed_work_type = confirm_work_type_drift_interactive(
+                registry, repository_path_for_check, work_type, objective,
+                answers.get("scope_boundary", ""), answers.get("completion_conditions", []),
+            )
+        except (KeyError, FileNotFoundError):
+            confirmed_work_type = work_type  # repo no longer resolvable -- skip the check, don't block planning over it
+        if confirmed_work_type != work_type:
+            store.save_plan_draft(initiative_id, confirmed_work_type, objective, draft["repositories"], draft["routing"], draft["questions"])
 
     local_architecture_notes_by_repo: dict[str, list[str]] = {}
     for repository_id in draft["repositories"]:
