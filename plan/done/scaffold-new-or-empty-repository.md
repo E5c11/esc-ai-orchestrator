@@ -1,6 +1,6 @@
 # Scaffold a New or Empty Repository — Plan
 
-**Status:** Active
+**Status:** Implemented
 **Date:** 2026-07-20
 **Objective:** Give onboarding a real path for a repository that has no detectable
 build system yet -- either because it's freshly created and empty, or because it
@@ -92,12 +92,39 @@ extending it.
    need a place to live, but that's not a new persistence *system*.
 3. ~~Provider-optional / "no wall at first run"~~ -- resolved: moot, since there's no
    AI call in this flow at all now. Fully works standalone, provider or not.
-4. What's actually in the wizard-command table to start, and where does it live
-   (a plain constant, or something registry-editable so a user can add their own
-   ecosystem's wizard)? Not decided -- smallest reasonable start is a hardcoded table
-   covering whatever stacks come up in practice, growing organically.
-5. How does escape-ai detect "a wizard was just run here" to prompt the follow-up
-   onboarding step, versus the user just running `escape-ai repository add` manually
-   once they're ready? Leaning toward not needing to detect anything -- the printed
-   instruction can just say "then run `escape-ai repository analyze` here" and trust
-   the user to come back, no detection needed. Not fully settled.
+4. ~~What's actually in the wizard-command table~~ -- resolved 2026-07-20: a plain
+   hardcoded `dict` (`esc_orchestrator/scaffold_wizards.py::WIZARD_COMMANDS`), not
+   registry-editable. Six starting entries (Next.js, React/Vite, plain npm, Spring
+   Boot, Kotlin Multiplatform, Rust); the rendered message says "any other external
+   scaffolding tool works the same way" for anything not listed, rather than
+   claiming completeness it doesn't have.
+5. ~~How does escape-ai detect "a wizard was just run here"~~ -- resolved 2026-07-20:
+   no detection at all, as leaned. The printed suggestion's `next_step` line just
+   says what to run once the wizard is done, and trusts the user to come back.
+
+## Implementation (2026-07-20)
+
+Built in `esc-ai-orchestrator` (the CLI/UX layer -- this never needed anything from
+`esc-ai-execution-framework`, since it's purely about what the CLI does when
+`detect_build_system` already fails, not a new detection capability):
+
+- `esc_orchestrator/scaffold_wizards.py` (new) -- `WIZARD_COMMANDS` and
+  `render_wizard_suggestion(reason, next_step)`.
+- `escape_ai_cli.py::run_onboarding_interactive` -- the interactive "Repository
+  path:" prompt now renders the wizard suggestion instead of a bare error, for both
+  scenarios (a real empty directory with no detected build system, and a path that
+  doesn't exist / isn't a registered repository ID). The second case fixes a real
+  pre-existing bug found while implementing this: `resolve_repository`'s
+  `KeyError`/`FileNotFoundError` (from `resolve_route` when nothing matches) was
+  never caught here at all -- only `ValueError` was -- so typing a nonexistent path
+  previously crashed with an uncaught traceback instead of failing cleanly.
+- `escape_ai_cli.py::_dispatch_repository`'s `analyze` subcommand -- same two-case
+  treatment, replacing the flat `INVALID {exc}` message the plan's own "Why this
+  plan exists" section called out by name. Other subcommands (`answer`/`apply`/
+  `validate`/`status`) were deliberately left with the plain `INVALID` message --
+  by that point a repository should already be registered, so "not found" there is
+  more likely a typo of an existing ID than a new-project moment, and a six-line
+  wizard table would be a worse message, not a better one, there.
+- Tests: `tests/test_scaffold_wizards.py` (new), plus four new cases in
+  `tests/test_escape_ai_cli.py` covering both entry points x both scenarios. Full
+  suite: 97 tests passing (up from 90).

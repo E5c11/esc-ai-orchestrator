@@ -32,6 +32,7 @@ from esc_exec.roadmap import load_project_roadmap, save_project_roadmap
 from esc_exec.yaml_io import load_yaml
 
 from esc_orchestrator.runtime import ClaudeCodeRuntime, CodexRuntime, OpenCodeRuntime
+from esc_orchestrator.scaffold_wizards import render_wizard_suggestion
 from esc_orchestrator.scheduler import Scheduler
 from esc_orchestrator.store import Store
 
@@ -931,7 +932,20 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
     try:
         repository_id, repository_path = resolve_repository(raw, registry)
     except ValueError as exc:
-        print(f"Could not detect a supported build system: {exc}")
+        # A real directory exists but no adapter detected a build system in it
+        # ("empty-but-real" -- see plan/done/scaffold-new-or-empty-repository.md).
+        print(render_wizard_suggestion(
+            f"No supported build system detected under `{Path(raw).expanduser().resolve()}` ({exc}).",
+            "Then come back to this menu and enter the path again.",
+        ))
+        return 1
+    except (KeyError, FileNotFoundError):
+        # Not an existing directory, and not a registered repository either --
+        # "no location at all" collapses into the same answer as the case above.
+        print(render_wizard_suggestion(
+            f"Nothing found at `{raw}`.",
+            "Then come back to this menu and enter the new project's path.",
+        ))
         return 1
 
     existing_proposal = store.get_onboarding_proposal(repository_id)
@@ -1332,8 +1346,21 @@ def _dispatch_repository(args: argparse.Namespace, store: Store, registry: Path)
     if args.repository_command == "analyze":
         try:
             repository_id, repository_path = resolve_repository(args.repository, registry)
+        except ValueError as exc:
+            print(render_wizard_suggestion(
+                f"No supported build system detected under `{args.repository}` ({exc}).",
+                "Then run: escape-ai repository add <id> <path> && escape-ai repository analyze <id>",
+            ))
+            return 1
+        except (KeyError, FileNotFoundError):
+            print(render_wizard_suggestion(
+                f"`{args.repository}` isn't a directory and isn't a registered repository.",
+                "Then run: escape-ai repository add <id> <path> && escape-ai repository analyze <id>",
+            ))
+            return 1
+        try:
             proposal = analyze(store, registry, repository_id, repository_path)
-        except (OSError, ValueError, KeyError, FileNotFoundError) as exc:
+        except (OSError, ValueError) as exc:
             print(f"INVALID    {exc}")
             return 1
         print(json.dumps(proposal, indent=2) if args.json else render_proposal(proposal))

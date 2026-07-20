@@ -14,7 +14,7 @@ end to end, not just described in the abstract.
 
 Depends on `plan/done/npm-build-system-support.md` (the general onboarding capability) and
 exercises `plan/done/ai-conversation-primitive.md`'s planning consumer and
-`plan/active/scaffold-new-or-empty-repository.md`'s resolved wizard-first direction, but is
+`plan/done/scaffold-new-or-empty-repository.md`'s resolved wizard-first direction, but is
 itself a specific project with its own scope and sequencing — not a generic
 capability. Same "distinct concern, own doc" reasoning as every other plan here;
 folding this into the npm-adapter doc would make that doc unreusable for any other

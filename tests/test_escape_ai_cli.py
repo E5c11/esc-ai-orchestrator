@@ -167,6 +167,36 @@ class NonInteractiveDispatchTests(unittest.TestCase):
             self.assertEqual(0, code)
             self.assertIn("has_applied_answers: True", out)
 
+    def test_analyze_of_empty_directory_suggests_scaffold_wizard(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            registry = root / "registry.yaml"
+            empty_dir = root / "empty-project"
+            empty_dir.mkdir()
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = cli.main(["--db", str(db), "--registry", str(registry), "repository", "analyze", str(empty_dir)])
+            self.assertEqual(1, code)
+            output = buffer.getvalue()
+            self.assertIn("No supported build system detected", output)
+            self.assertIn("npx create-next-app@latest", output)
+
+    def test_analyze_of_unregistered_id_suggests_scaffold_wizard(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            registry = root / "registry.yaml"
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = cli.main(["--db", str(db), "--registry", str(registry), "repository", "analyze", "not-registered"])
+            self.assertEqual(1, code)
+            output = buffer.getvalue()
+            self.assertIn("isn't a directory and isn't a registered repository", output)
+            self.assertIn("npx create-next-app@latest", output)
+
     def test_apply_without_pending_answers_is_incomplete(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -324,6 +354,55 @@ class InteractiveOnboardingTests(unittest.TestCase):
             self.assertTrue((repository_dir / ".esc-ai" / "esc-execution.yaml").is_file())
             self.assertTrue((repository_dir / ".esc-ai" / "INSTRUCTIONS.md").is_file())
             self.assertIn("Owns content.", component_manifest_path(repository_dir, "content").read_text(encoding="utf-8"))
+
+    def test_empty_directory_suggests_scaffold_wizard(self):
+        # Case 1 from plan/done/scaffold-new-or-empty-repository.md: a real
+        # directory exists but no adapter detects a build system in it.
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            empty_dir = root / "empty-project"
+            empty_dir.mkdir()
+            store = Store(root / "db.sqlite")
+
+            responses = iter([str(empty_dir)])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_onboarding_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+
+            self.assertEqual(1, code)
+            output = buffer.getvalue()
+            self.assertIn("No supported build system detected", output)
+            self.assertIn("npx create-next-app@latest", output)
+            self.assertNotIn("Traceback", output)
+
+    def test_nonexistent_path_suggests_scaffold_wizard(self):
+        # Case 2: nothing exists at that path at all, and it isn't a registered
+        # repository ID either -- collapses into the same answer as case 1.
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            store = Store(root / "db.sqlite")
+
+            responses = iter([str(root / "does-not-exist-yet")])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_onboarding_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+
+            self.assertEqual(1, code)
+            output = buffer.getvalue()
+            self.assertIn("Nothing found at", output)
+            self.assertIn("npx create-next-app@latest", output)
 
     def test_ai_suggested_purpose_is_accepted_with_blank_input(self):
         with TemporaryDirectory() as temp:
