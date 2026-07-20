@@ -1,6 +1,6 @@
 # npm/Next.js Build-System Support — Plan
 
-**Status:** Active
+**Status:** Implemented
 **Date:** 2026-07-20
 **Objective:** Give escape-ai's onboarding a second real build-system adapter (npm),
 so a JavaScript/TypeScript repository can be onboarded the same way a Gradle

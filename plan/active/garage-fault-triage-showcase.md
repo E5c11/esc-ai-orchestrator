@@ -12,7 +12,7 @@ end to end, not just described in the abstract.
 
 ## Why this is a separate plan
 
-Depends on `plan/active/npm-build-system-support.md` (the general onboarding capability) and
+Depends on `plan/done/npm-build-system-support.md` (the general onboarding capability) and
 exercises `plan/done/ai-conversation-primitive.md`'s planning consumer and
 `plan/active/scaffold-new-or-empty-repository.md`'s resolved wizard-first direction, but is
 itself a specific project with its own scope and sequencing — not a generic
@@ -24,9 +24,15 @@ now-corrected "Two consumers" history in `ai-conversation-primitive.md`).
 
 ## Prerequisite
 
-`plan/active/npm-build-system-support.md` must be built first — this plan does not re-design
-that capability, it consumes it. Do not start task 5 below before that plan's scope
-is done.
+`plan/done/npm-build-system-support.md` — done as of 2026-07-20: `NpmAdapter`,
+`generate_npm_manifests`, and `apply_onboarding_answers`'s adapter dispatch are all
+built and test-covered (255 tests passing in `esc-ai-execution-framework`, up from
+242). Also fixed two Gradle-coupling bugs found only by actually running an npm
+repo through `apply_onboarding_answers` end to end, not called out in that plan's
+original scope: `validate_component` hardcoded `build.system == "gradle"`, and
+`build_dependency_graph` hard-required `manifest["build"]["project"]` (a Gradle-only
+concept) and crashed with `KeyError` on an npm component. This plan's task 2
+(scaffold externally) is next.
 
 ## Scope / sequence
 
@@ -80,7 +86,7 @@ a real demonstration even if this stretch isn't reached.
 
 ## Task breakdown (ordered by dependency)
 
-1. Complete `plan/active/npm-build-system-support.md` in full (its own task list applies)
+1. ~~Complete `plan/done/npm-build-system-support.md` in full~~ — done 2026-07-20
 2. `npx create-next-app` the actual app skeleton locally — manual step, not code
    escape-ai writes
 3. Register the new repo + `esc-ai-architecture-framework` in a working registry.yaml
