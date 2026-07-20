@@ -64,8 +64,12 @@ not by parsing a specific build-file format, so it covers npm for free.
 
 ## Non-goals
 
-- Do not build monorepo/workspace-aware npm detection (multiple `package.json`s,
-  workspace roots) — out of scope until a real consuming project actually needs it.
+- ~~Do not build monorepo/workspace-aware npm detection~~ — **reversed 2026-07-20**
+  in `plan/done/generic-multi-component-detection.md`: "build to scale" (see the
+  `feedback_build_to_scale` memory) meant not shipping this as a known gap deferred
+  for later. Real `package.json` `"workspaces"`/`pnpm-workspace.yaml` detection is
+  now built in `detect_npm_repository`, fully deterministic (glob resolution
+  against the filesystem), no AI fallback needed.
 - Do not build Tier 1 static architecture-signal detection for npm (parsing
   `package.json` dependencies into `profile_doc_map` suggestions) — Tier 2 already
   covers this generically; building Tier 1 too would be effort spent on something

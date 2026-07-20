@@ -7,9 +7,10 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from esc_exec.manifests import component_manifest_path
+from esc_exec.manifests import component_manifest_path, repository_manifest_path
 from esc_exec.registry import add_route, set_provider
 from esc_exec.roadmap import load_project_roadmap
+from esc_exec.yaml_io import load_yaml
 
 from esc_orchestrator import escape_ai_cli as cli
 from esc_orchestrator.store import Store
@@ -22,6 +23,28 @@ def _make_gradle_repository(root: Path) -> None:
     )
     (root / "content/src/main/kotlin").mkdir(parents=True)
     (root / "content/build.gradle.kts").write_text("", encoding="utf-8")
+
+
+def _make_multi_component_gradle_repository(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "settings.gradle.kts").write_text(
+        'rootProject.name = "repo"\ninclude(":core")\ninclude(":sample")\n', encoding="utf-8",
+    )
+    for component in (root / "core", root / "sample"):
+        (component / "src/main/kotlin").mkdir(parents=True)
+        (component / "build.gradle.kts").write_text("", encoding="utf-8")
+
+
+def _make_gradle_repository_with_unresolved_module(root: Path) -> None:
+    """A module Tier 1 can't resolve at all -- no projectDir remap, no directory
+    matching the declared path -- so adapter.unresolved() reports it."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "settings.gradle.kts").write_text(
+        'rootProject.name = "repo"\ninclude(":content")\ninclude(":ghost")\n', encoding="utf-8",
+    )
+    (root / "content/src/main/kotlin").mkdir(parents=True)
+    (root / "content/build.gradle.kts").write_text("", encoding="utf-8")
+    (root / "actual-ghost-dir").mkdir()
 
 
 class RenderingTests(unittest.TestCase):
@@ -321,6 +344,42 @@ class PlanningDispatchTests(unittest.TestCase):
             self.assertEqual(["repo-a/feature-cross-repo-a"], task_b["task"]["initiative"]["depends_on"])
 
 
+class TopLevelMenuLoopTests(unittest.TestCase):
+    """
+    Regression: run_interactive used to run exactly one action and propagate its
+    return code straight out of main() -- so completing (or even just failing)
+    a single onboarding silently ended the whole session instead of returning to
+    the home screen. It now loops until the user explicitly backs out.
+    """
+
+    def test_menu_returns_after_a_failed_action_instead_of_exiting(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            store = Store(root / "db.sqlite")
+
+            responses = iter([
+                "1",                              # Onboard a repository
+                str(root / "does-not-exist-yet"),  # triggers the scaffold-wizard dead end
+                "5",                               # Configure system -- not yet implemented
+                "",                                # blank -> back out of the menu
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+
+            self.assertEqual(0, code)
+            output = buffer.getvalue()
+            self.assertIn("Nothing found at", output)
+            self.assertIn(cli.NOT_YET_IMPLEMENTED, output)
+            self.assertEqual(3, output.count("What would you like to do?"))
+
+
 class InteractiveOnboardingTests(unittest.TestCase):
     """End-to-end via the interactive path: real business logic, scripted input()."""
 
@@ -334,6 +393,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
 
             responses = iter([
                 str(repository_dir),  # repository path
+                "",                   # component confirmation: include all
                 "2",                  # decline the "connect an AI provider?" offer (Yes/No menu)
                 "Owns content.",      # answer to the purpose question
                 "1",                  # confirm apply (Yes/No menu)
@@ -413,10 +473,10 @@ class InteractiveOnboardingTests(unittest.TestCase):
             store = Store(root / "db.sqlite")
 
             original_suggest = cli.suggest_answers_via_provider
-            cli.suggest_answers_via_provider = lambda registry, repository_path, purpose_ids, frameworks_ids: {
+            cli.suggest_answers_via_provider = lambda registry, repository_path, purpose_ids, frameworks_ids, resume_session_id=None: {
                 "content": {"purpose": "Owns lesson publishing."}
             }
-            responses = iter([str(repository_dir), "2", "", "1"])  # decline connect offer, then blank -- accept the (mocked) suggestion
+            responses = iter([str(repository_dir), "", "2", "", "1"])  # include all, decline connect offer, then blank -- accept the (mocked) suggestion
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
@@ -442,10 +502,10 @@ class InteractiveOnboardingTests(unittest.TestCase):
             store = Store(root / "db.sqlite")
 
             original_suggest = cli.suggest_answers_via_provider
-            cli.suggest_answers_via_provider = lambda registry, repository_path, purpose_ids, frameworks_ids: {
+            cli.suggest_answers_via_provider = lambda registry, repository_path, purpose_ids, frameworks_ids, resume_session_id=None: {
                 "content": {"purpose": "Owns lesson publishing."}
             }
-            responses = iter([str(repository_dir), "2", "Actually owns something else.", "1"])
+            responses = iter([str(repository_dir), "", "2", "Actually owns something else.", "1"])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
@@ -483,6 +543,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
 
             responses = iter([
                 str(repository_dir),  # repository path
+                "",                   # component confirmation: include all
                 "1", "1", "1",        # connect offer: yes -> claude -> subscription
                 "",                   # accept the suggestion
                 "1",                  # confirm apply (Yes)
@@ -517,7 +578,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             _make_gradle_repository(repository_dir)
             store = Store(root / "db.sqlite")
 
-            responses = iter([str(repository_dir), "2", "Owns content.", "1"])
+            responses = iter([str(repository_dir), "", "2", "Owns content.", "1"])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
@@ -542,7 +603,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             _make_gradle_repository(repository_dir)
             store = Store(root / "db.sqlite")
 
-            responses = iter([str(repository_dir), "2", "Owns content.", "2"])
+            responses = iter([str(repository_dir), "", "2", "Owns content.", "2"])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
@@ -567,7 +628,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
 
             # First run: analyze, then decline to apply -- leaves a saved proposal
             # with no saved answers (unfinished).
-            first_responses = iter([str(repository_dir), "2", "Owns content.", "2"])
+            first_responses = iter([str(repository_dir), "", "2", "Owns content.", "2"])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(first_responses)
             try:
@@ -580,7 +641,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             # Second run: the unfinished-onboarding menu should appear first, and
             # picking the only entry should skip straight past the repository-path
             # prompt into the same proposal.
-            second_responses = iter(["1", "2", "Owns content.", "1"])  # pick unfinished repo -> decline connect offer -> answer -> apply
+            second_responses = iter(["1", "", "2", "Owns content.", "1"])  # pick unfinished repo -> include all -> decline connect offer -> answer -> apply
             builtins.input = lambda prompt="": next(second_responses)
             try:
                 buffer = io.StringIO()
@@ -604,7 +665,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             _make_gradle_repository(repository_dir)
             store = Store(root / "db.sqlite")
 
-            first_responses = iter([str(repository_dir), "2", "Owns content.", "1"])
+            first_responses = iter([str(repository_dir), "", "2", "Owns content.", "1"])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(first_responses)
             try:
@@ -625,6 +686,149 @@ class InteractiveOnboardingTests(unittest.TestCase):
             self.assertEqual(0, code)
             self.assertIn("resuming", buffer.getvalue())
             self.assertIn("already onboarded", buffer.getvalue())
+
+
+class ComponentConfirmationTests(unittest.TestCase):
+    """plan/active/generic-multi-component-detection.md design section 4 --
+    always-shown confirmation step, wired into run_onboarding_interactive."""
+
+    def test_excluding_a_component_writes_no_manifest_for_it(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_multi_component_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+
+            responses = iter([
+                str(repository_dir),  # repository path
+                "2",                  # exclude component #2 (sample)
+                "2",                  # decline connect offer
+                "Owns core.",         # purpose for the remaining component
+                "1",                  # confirm apply
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_onboarding_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+
+            self.assertEqual(0, code)
+            self.assertIn("2 component(s) found", buffer.getvalue())
+            self.assertTrue(component_manifest_path(repository_dir, "core").is_file())
+            self.assertFalse(component_manifest_path(repository_dir, "sample").is_file())
+            repository = load_yaml(repository_manifest_path(repository_dir))
+            self.assertEqual(["sample"], repository["excluded_components"])
+
+    def test_cancelling_the_confirmation_step_writes_nothing(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+
+            responses = iter([str(repository_dir)])
+            original_input = builtins.input
+
+            def fake_input(prompt=""):
+                try:
+                    return next(responses)
+                except StopIteration:
+                    raise EOFError()
+
+            builtins.input = fake_input
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_onboarding_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+
+            self.assertEqual(0, code)
+            self.assertIn("Cancelled", buffer.getvalue())
+            self.assertFalse((repository_dir / ".esc-ai" / "esc-execution.yaml").exists())
+
+
+class ModuleResolutionInteractiveTests(unittest.TestCase):
+    """plan/active/generic-multi-component-detection.md design section 3 --
+    generic AI-fallback module-resolution turn, wired into
+    run_onboarding_interactive ahead of the confirmation step."""
+
+    def test_unresolved_module_is_ai_resolved_and_onboarded(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository_with_unresolved_module(repository_dir)
+            store = Store(root / "db.sqlite")
+            set_provider(registry, "claude", "subscription")
+
+            original_suggest = cli.suggest_unresolved_components
+            cli.suggest_unresolved_components = lambda client, repository_path, unresolved: {
+                "resolved": {":ghost": "actual-ghost-dir"}, "session_id": "ses-1",
+            }
+            original_groundable = cli.suggest_answers_via_provider
+            cli.suggest_answers_via_provider = lambda *args, **kwargs: {}
+
+            responses = iter([
+                str(repository_dir),  # repository path
+                "",                   # component confirmation: include all
+                "Owns content.",      # purpose: content
+                "Owns the ghost.",    # purpose: ghost
+                "1",                  # confirm apply
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_onboarding_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+                cli.suggest_unresolved_components = original_suggest
+                cli.suggest_answers_via_provider = original_groundable
+
+            self.assertEqual(0, code)
+            output = buffer.getvalue()
+            self.assertIn("could not be resolved to a real directory", output)
+            self.assertIn(":ghost -> actual-ghost-dir", output)
+            manifest = load_yaml(repository_manifest_path(repository_dir))
+            self.assertIn("ghost", [c["id"] for c in manifest["components"]])
+            self.assertEqual({":ghost": "actual-ghost-dir"}, manifest["resolved_components"])
+
+    def test_unresolved_module_without_a_provider_is_skipped_with_explanation(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository_with_unresolved_module(repository_dir)
+            store = Store(root / "db.sqlite")
+
+            responses = iter([
+                str(repository_dir),  # repository path
+                "",                   # component confirmation: include all (only "content" is offered)
+                "2",                  # decline connect offer
+                "Owns content.",      # purpose: content
+                "1",                  # confirm apply
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_onboarding_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+
+            self.assertEqual(0, code)
+            output = buffer.getvalue()
+            self.assertIn("could not be resolved to a real directory: :ghost", output)
+            self.assertIn("Connect an AI provider", output)
+            self.assertFalse(component_manifest_path(repository_dir, "ghost").is_file())
 
 
 class PlanningInteractiveTests(unittest.TestCase):

@@ -158,16 +158,36 @@ repository. Provider-gated, optional, offered after drafting a single-repository
 plan; roadmap updates go through an explicit confirm. Live smoke-tested against the
 real `claude` CLI.
 
-**No longer a second consumer.** New/empty-repository scaffolding
+**Not a second consumer.** New/empty-repository scaffolding
 (`scaffold-new-or-empty-repository.md`) originally surfaced this primitive, but that
 doc was resolved 2026-07-20 to *not* need a conversation at all -- scaffolding a new
 project from nothing is a solved problem external wizards (`create-next-app`, Spring
 Initializr, ...) already handle deterministically; an AI conversation reinventing
 that decision would be strictly worse (less deterministic, costs tokens, drifts from
 ecosystem convention) and contradicts this system's own premise. See that doc's
-"Resolved 2026-07-20" note. This primitive stays a one-consumer mechanism unless a
-genuine second use case shows up -- it was never scaffolding-specific in its design,
-just in how it was first motivated.
+"Resolved 2026-07-20" note.
+
+**Built 2026-07-20: onboarding's Tier 2 module resolution + purpose/frameworks
+suggestion** (`suggest_unresolved_components`/`suggest_groundable_answers_turn` in
+`esc_exec/conversation.py`, wired into `run_onboarding_interactive` in
+`esc_orchestrator/escape_ai_cli.py`) -- the genuine second consumer the note above
+was waiting for, from `plan/active/generic-multi-component-detection.md`. Two turns
+of one session, not two separate one-shot calls: turn 1 (only when
+`BuildSystemAdapter.unresolved()` is non-empty) asks the AI to resolve a build
+identifier Tier 1 static parsing couldn't map to a real directory; turn 2
+(`--resume` of that same session, skipped entirely if turn 1 never ran) asks for
+purpose/frameworks on the now-confirmed component list. This is what the "multiple
+turns don't re-pay the fixed overhead" measurement above was actually motivated
+by avoiding in a concrete case, not just a hypothetical -- module resolution and
+purpose/frameworks suggestion would otherwise be two separate fresh `claude -p`
+invocations in the same onboarding pass. Provider-gated the same way planning
+refinement is; the module-resolution turn's answer is persisted into the
+repository manifest (`resolved_components`) so a later analyze/apply never needs
+to re-run it.
+
+This primitive is no longer a one-consumer mechanism -- it was never
+scaffolding-specific in its design, just in how it was first motivated, and now has
+two real, independently-justified consumers.
 
 ## Non-goals
 

@@ -13,7 +13,9 @@ from esc_exec.claude_code_adapter import (
     ClaudeCodeClient, ClaudeCodeError, claude_auth_status, claude_cli_available, suggest_onboarding_answers,
 )
 from esc_exec.codex_adapter import codex_auth_status, codex_cli_available
-from esc_exec.conversation import compact_conversation, run_turn
+from esc_exec.conversation import (
+    compact_conversation, run_turn, suggest_groundable_answers_turn, suggest_unresolved_components,
+)
 from esc_exec.dependencies import validate_dependency_graph
 from esc_exec.indexing import validate_indexes
 from esc_exec.manifests import overall_exit_code, validate_repository
@@ -247,17 +249,25 @@ def resolve_repository(value: str, registry: Path) -> tuple[str, Path]:
     return value, resolve_route(registry, "repositories", value)
 
 
-def analyze(store: Store, registry: Path, repository_id: str, repository_path: Path) -> dict[str, Any]:
-    proposal = analyze_repository(repository_path, registry)
+def analyze(
+    store: Store, registry: Path, repository_id: str, repository_path: Path,
+    extra_resolved_components: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    proposal = analyze_repository(repository_path, registry, extra_resolved_components)
     store.save_onboarding_proposal(repository_id, proposal)
     return proposal
 
 
-def apply_answers(store: Store, registry: Path, repository_id: str, repository_path: Path, answers: dict[str, Any]) -> dict[str, Any]:
+def apply_answers(
+    store: Store, registry: Path, repository_id: str, repository_path: Path, answers: dict[str, Any],
+    resolved_components: dict[str, str] | None = None, excluded_component_ids: list[str] | None = None,
+) -> dict[str, Any]:
     record = store.get_onboarding_proposal(repository_id)
     if record is None:
         raise ValueError(f"no onboarding proposal for `{repository_id}`; analyze first")
-    result = apply_onboarding_answers(repository_path, record["proposal"], answers, registry)
+    result = apply_onboarding_answers(
+        repository_path, record["proposal"], answers, registry, resolved_components, excluded_component_ids,
+    )
     store.save_onboarding_answers(repository_id, answers, result)
     return result
 
@@ -799,21 +809,32 @@ def confirm(question: str) -> bool:
 
 
 def run_interactive(store: Store, registry: Path) -> int:
-    choice = select_menu(render_menu(), MENU)
-    if choice is None:
-        return 0
-    if choice == 0:
-        return run_onboarding_interactive(store, registry)
-    if choice == 1:
-        return run_planning_interactive(store, registry)
-    if choice == 2:
-        return run_resume_interactive(store, registry)
-    print(NOT_YET_IMPLEMENTED)
-    return 0
+    """
+    Loops back to this same menu after every action -- including one that ends
+    in an error message (a bad repository path, a failed apply, ...) -- instead
+    of exiting the whole process. A single action's own return code was
+    previously propagated straight out of main(), so completing (or even just
+    failing) one onboarding silently ended the entire session; the only
+    deliberate exit is backing out of the menu itself (Esc/blank/EOF/Ctrl-C,
+    handled by select_menu returning None).
+    """
+    while True:
+        choice = select_menu(render_menu(), MENU)
+        if choice is None:
+            return 0
+        if choice == 0:
+            run_onboarding_interactive(store, registry)
+        elif choice == 1:
+            run_planning_interactive(store, registry)
+        elif choice == 2:
+            run_resume_interactive(store, registry)
+        else:
+            print(NOT_YET_IMPLEMENTED)
 
 
 def suggest_answers_via_provider(
     registry: Path, repository_path: Path, purpose_component_ids: list[str], frameworks_component_ids: list[str],
+    resume_session_id: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """
     Tier 2 of plan/done/onboarding-answer-detection-and-suggestion.md, scoped to the
@@ -825,10 +846,23 @@ def suggest_answers_via_provider(
     requirement. Covers both `purpose` and `frameworks`/`targets` in the same batched
     call -- originally purpose-only, extended after a user noticed only the first
     onboarding question ever came back with a suggestion.
+
+    resume_session_id, when given, means a module-resolution turn already ran this
+    session (see suggest_unresolved_components) -- this call becomes a `--resume`
+    of that same session (suggest_groundable_answers_turn) instead of a fresh
+    `client.ask()`, so it's the cheap second-turn cost rather than paying the
+    ~40-50K-token fixed setup cost twice in one onboarding pass (see
+    plan/active/generic-multi-component-detection.md design section 5).
     """
     provider = active_provider(registry)
     if provider is None or provider != {"id": "claude", "route": "subscription"}:
         return {}
+    if resume_session_id:
+        applicability = {"purpose": set(purpose_component_ids), "frameworks_targets": set(frameworks_component_ids)}
+        result = suggest_groundable_answers_turn(
+            ClaudeCodeClient(), repository_path, applicability, resume_session_id,
+        )
+        return result["suggestions"]
     try:
         return suggest_onboarding_answers(ClaudeCodeClient(), repository_path, purpose_component_ids, frameworks_component_ids)
     except ClaudeCodeError:
@@ -910,6 +944,43 @@ def _unfinished_onboarding_label(store: Store, registry: Path, repository_id: st
     return f"{repository_id} ({pending} question(s) pending){warning}"
 
 
+def confirm_components_interactive(components: list[dict[str, str]]) -> set[str] | None:
+    """
+    Always-shown component confirmation step (plan/active/generic-multi-component-
+    detection.md design section 4) -- shows every component about to be onboarded
+    (Tier 1-detected and Tier 2 AI-resolved alike) and lets the user deselect any
+    they don't want (test fixtures, deprecated modules, samples, ...) before any
+    manifest is generated or purpose/frameworks question is asked. Applies
+    uniformly regardless of adapter or whether AI was involved in resolving
+    anything -- decided explicitly, not conditional on ambiguity having occurred.
+
+    Simple v1: typed numbers, not a picker (see that plan's open question 1) --
+    matches select_menu's own non-TTY fallback style and needs no new picker
+    infrastructure.
+
+    Returns the set of excluded component IDs (empty if none), or None if the
+    user backed out (EOF/Ctrl-C) -- mirrors select_menu's own None-means-cancelled
+    convention.
+    """
+    if not components:
+        return set()
+    print_question(f"\n{len(components)} component(s) found:")
+    for index, component in enumerate(components, 1):
+        print(f"  {index}. {component['id']} ({component['path']})")
+    try:
+        raw = ask("Exclude any? (comma-separated numbers, or Enter to include all)").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if not raw:
+        return set()
+    excluded_indices: set[int] = set()
+    for token in raw.split(","):
+        token = token.strip()
+        if token.isdigit() and 1 <= int(token) <= len(components):
+            excluded_indices.add(int(token) - 1)
+    return {components[index]["id"] for index in excluded_indices}
+
+
 def run_onboarding_interactive(store: Store, registry: Path) -> int:
     unfinished = store.list_unfinished_onboardings()
     raw: str | None = None
@@ -948,9 +1019,38 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
         ))
         return 1
 
+    # Tier 2 AI fallback for module identity -- generic across adapters, keyed off
+    # BuildSystemAdapter.unresolved(), not Gradle-specific (see
+    # plan/active/generic-multi-component-detection.md design section 3). Runs
+    # before analyze() so its answer is reflected in this session's proposal
+    # immediately, not just after being persisted by a later apply.
+    _, _, adapter = detect_build_system(repository_path)
+    unresolved = adapter.unresolved(repository_path)
+    extra_resolved: dict[str, str] = {}
+    resolution_session_id: str | None = None
+    if unresolved:
+        if active_provider(registry) == {"id": "claude", "route": "subscription"}:
+            print(f"\n{len(unresolved)} declared module(s) could not be resolved to a real directory -- asking AI to help locate them...")
+            resolution = suggest_unresolved_components(ClaudeCodeClient(), repository_path, unresolved)
+            extra_resolved = resolution["resolved"]
+            resolution_session_id = resolution["session_id"]
+            if extra_resolved:
+                print("Resolved:")
+                for identifier, relative in extra_resolved.items():
+                    print(f"  {identifier} -> {relative}")
+            still_unresolved = [identifier for identifier in unresolved if identifier not in extra_resolved]
+            if still_unresolved:
+                print(f"Could not resolve, will be skipped: {', '.join(still_unresolved)}")
+        else:
+            print(
+                f"\n{len(unresolved)} declared module(s) could not be resolved to a real directory: "
+                f"{', '.join(unresolved)}. Connect an AI provider (Configure system) to help resolve "
+                "them -- skipping for now."
+            )
+
     existing_proposal = store.get_onboarding_proposal(repository_id)
     try:
-        proposal = analyze(store, registry, repository_id, repository_path)
+        proposal = analyze(store, registry, repository_id, repository_path, extra_resolved or None)
     except (OSError, ValueError) as exc:
         print(f"Analysis failed: {exc}")
         return 1
@@ -968,8 +1068,13 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
 
     print(render_proposal(proposal))
 
+    newly_excluded_ids = confirm_components_interactive(proposal["components"])
+    if newly_excluded_ids is None:
+        print("\nCancelled -- nothing was written. The proposal is saved; resume anytime by running escape-ai again.")
+        return 0
+
     answers: dict[str, dict[str, Any]] = {}
-    questions = proposal["semantic_questions"]
+    questions = [q for q in proposal["semantic_questions"] if q["component_id"] not in newly_excluded_ids]
     purpose_component_ids = [question["component_id"] for question in questions if question["field"] == "purpose"]
     frameworks_component_ids = [question["component_id"] for question in questions if question["field"] == "frameworks"]
     ai_answerable_count = len(set(purpose_component_ids) | set(frameworks_component_ids))
@@ -978,7 +1083,9 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
         prompt_provider_setup_interactive(registry)
     if ai_answerable_count and active_provider(registry) is not None:
         print("Thinking... (reading source to suggest answers -- this can take a minute)")
-    suggestions = suggest_answers_via_provider(registry, repository_path, purpose_component_ids, frameworks_component_ids)
+    suggestions = suggest_answers_via_provider(
+        registry, repository_path, purpose_component_ids, frameworks_component_ids, resolution_session_id,
+    )
     try:
         for index, question in enumerate(questions, 1):
             print()
@@ -993,7 +1100,11 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
         return 0
 
     try:
-        result = apply_answers(store, registry, repository_id, repository_path, answers)
+        result = apply_answers(
+            store, registry, repository_id, repository_path, answers,
+            resolved_components=extra_resolved or None,
+            excluded_component_ids=sorted(newly_excluded_ids) or None,
+        )
     except (OSError, ValueError) as exc:
         print(f"Apply failed: {exc}")
         return 1
