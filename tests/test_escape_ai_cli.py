@@ -7,10 +7,11 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from esc_exec.manifests import component_manifest_path, repository_manifest_path
+from esc_exec.indexing import generate_indexes
+from esc_exec.manifests import component_manifest_path, generate_gradle_manifests, repository_manifest_path
 from esc_exec.registry import add_route, set_provider
 from esc_exec.roadmap import load_project_roadmap
-from esc_exec.yaml_io import load_yaml
+from esc_exec.yaml_io import load_yaml, write_yaml
 
 from esc_orchestrator import escape_ai_cli as cli
 from esc_orchestrator.store import Store
@@ -397,6 +398,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
                 "2",                  # decline the "connect an AI provider?" offer (Yes/No menu)
                 "Owns content.",      # answer to the purpose question
                 "1",                  # confirm apply (Yes/No menu)
+                "no",                 # decline "plan new work now?"
             ])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
@@ -414,6 +416,49 @@ class InteractiveOnboardingTests(unittest.TestCase):
             self.assertTrue((repository_dir / ".esc-ai" / "esc-execution.yaml").is_file())
             self.assertTrue((repository_dir / ".esc-ai" / "INSTRUCTIONS.md").is_file())
             self.assertIn("Owns content.", component_manifest_path(repository_dir, "content").read_text(encoding="utf-8"))
+            self.assertIn("Repository map for `repo`", output)
+            self.assertIn("purpose: Owns content.", output)
+
+    def test_pressing_enter_after_apply_jumps_into_prefilled_planning(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+
+            responses = iter([
+                str(repository_dir),  # repository path
+                "",                   # component confirmation: include all
+                "2",                  # decline connect offer
+                "Owns content.",      # purpose
+                "1",                  # confirm apply
+                "",                   # blank -> jump into planning, pre-filled with this repo
+                "1",                  # work type: feature
+                "Add CSV export.",    # objective
+                "feature-export",     # initiative id
+                # no "Repositories:" prompt -- pre-filled with the repo just onboarded
+                "content",            # components question answer
+                "No admin UI.",       # scope_boundary
+                "Export works",       # completion_conditions
+                "",                   # rollout_needs
+                "1",                  # confirm plan apply
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_onboarding_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+
+            self.assertEqual(0, code)
+            output = buffer.getvalue()
+            self.assertNotIn("Repositories (comma-separated", output)
+            self.assertIn("Planned.", output)
+            task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-export"
+            self.assertTrue((task_dir / "task.yaml").is_file())
 
     def test_empty_directory_suggests_scaffold_wizard(self):
         # Case 1 from plan/done/scaffold-new-or-empty-repository.md: a real
@@ -476,7 +521,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             cli.suggest_answers_via_provider = lambda registry, repository_path, purpose_ids, frameworks_ids, resume_session_id=None: {
                 "content": {"purpose": "Owns lesson publishing."}
             }
-            responses = iter([str(repository_dir), "", "2", "", "1"])  # include all, decline connect offer, then blank -- accept the (mocked) suggestion
+            responses = iter([str(repository_dir), "", "2", "", "1", "no"])  # include all, decline connect offer, then blank -- accept the (mocked) suggestion
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
@@ -505,7 +550,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             cli.suggest_answers_via_provider = lambda registry, repository_path, purpose_ids, frameworks_ids, resume_session_id=None: {
                 "content": {"purpose": "Owns lesson publishing."}
             }
-            responses = iter([str(repository_dir), "", "2", "Actually owns something else.", "1"])
+            responses = iter([str(repository_dir), "", "2", "Actually owns something else.", "1", "no"])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
@@ -547,6 +592,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
                 "1", "1", "1",        # connect offer: yes -> claude -> subscription
                 "",                   # accept the suggestion
                 "1",                  # confirm apply (Yes)
+                "no",                 # decline "plan new work now?"
             ])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
@@ -578,7 +624,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             _make_gradle_repository(repository_dir)
             store = Store(root / "db.sqlite")
 
-            responses = iter([str(repository_dir), "", "2", "Owns content.", "1"])
+            responses = iter([str(repository_dir), "", "2", "Owns content.", "1", "no"])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
@@ -641,7 +687,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             # Second run: the unfinished-onboarding menu should appear first, and
             # picking the only entry should skip straight past the repository-path
             # prompt into the same proposal.
-            second_responses = iter(["1", "", "2", "Owns content.", "1"])  # pick unfinished repo -> include all -> decline connect offer -> answer -> apply
+            second_responses = iter(["1", "", "2", "Owns content.", "1", "no"])  # pick unfinished repo -> include all -> decline connect offer -> answer -> apply -> decline plan
             builtins.input = lambda prompt="": next(second_responses)
             try:
                 buffer = io.StringIO()
@@ -665,7 +711,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             _make_gradle_repository(repository_dir)
             store = Store(root / "db.sqlite")
 
-            first_responses = iter([str(repository_dir), "", "2", "Owns content.", "1"])
+            first_responses = iter([str(repository_dir), "", "2", "Owns content.", "1", "no"])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(first_responses)
             try:
@@ -706,6 +752,7 @@ class ComponentConfirmationTests(unittest.TestCase):
                 "2",                  # decline connect offer
                 "Owns core.",         # purpose for the remaining component
                 "1",                  # confirm apply
+                "no",                 # decline "plan new work now?"
             ])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
@@ -780,6 +827,7 @@ class ModuleResolutionInteractiveTests(unittest.TestCase):
                 "Owns content.",      # purpose: content
                 "Owns the ghost.",    # purpose: ghost
                 "1",                  # confirm apply
+                "no",                 # decline "plan new work now?"
             ])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
@@ -814,6 +862,7 @@ class ModuleResolutionInteractiveTests(unittest.TestCase):
                 "2",                  # decline connect offer
                 "Owns content.",      # purpose: content
                 "1",                  # confirm apply
+                "no",                 # decline "plan new work now?"
             ])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
@@ -829,6 +878,108 @@ class ModuleResolutionInteractiveTests(unittest.TestCase):
             self.assertIn("could not be resolved to a real directory: :ghost", output)
             self.assertIn("Connect an AI provider", output)
             self.assertFalse(component_manifest_path(repository_dir, "ghost").is_file())
+
+
+class OfferLocalArchitectureNoteInteractiveTests(unittest.TestCase):
+    """plan/active/planning-consistency-checks.md design section 2."""
+
+    def _setup(self, temp, profile_ids=("PAT-X",)):
+        root = Path(temp)
+        registry = root / "registry.yaml"
+        repository_dir = root / "repo-checkout"
+        _make_gradle_repository(repository_dir)
+        generate_gradle_manifests(repository_dir)
+        manifest_path = component_manifest_path(repository_dir, "content")
+        manifest = load_yaml(manifest_path)
+        manifest["component"]["purpose"] = "Owns content."
+        if profile_ids:
+            manifest["architecture"] = {"profile_ids": list(profile_ids)}
+        write_yaml(manifest_path, manifest)
+        generate_indexes(repository_dir)
+
+        framework_dir = root / "framework-checkout"
+        framework_dir.mkdir()
+        (framework_dir / "index.json").write_text(json.dumps({"documents": [
+            {"id": "PAT-X", "path": "patterns/x.md", "tags": ["x"], "requires": [], "layer": "patterns"},
+        ]}), encoding="utf-8")
+        add_route(registry, "frameworks", "esc-ai-architecture-framework", framework_dir)
+        return registry, repository_dir
+
+    def test_no_provider_connected_returns_empty_without_calling_out(self):
+        with TemporaryDirectory() as temp:
+            registry, repository_dir = self._setup(temp)
+            notes = cli.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
+        self.assertEqual([], notes)
+
+    def test_framework_route_unresolvable_returns_empty(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            generate_gradle_manifests(repository_dir)
+            manifest_path = component_manifest_path(repository_dir, "content")
+            manifest = load_yaml(manifest_path)
+            manifest["component"]["purpose"] = "Owns content."
+            write_yaml(manifest_path, manifest)
+            generate_indexes(repository_dir)
+            set_provider(registry, "claude", "subscription")
+            notes = cli.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
+        self.assertEqual([], notes)
+
+    def test_covered_result_returns_empty(self):
+        with TemporaryDirectory() as temp:
+            registry, repository_dir = self._setup(temp)
+            set_provider(registry, "claude", "subscription")
+            original = cli.suggest_architecture_coverage_gap
+            cli.suggest_architecture_coverage_gap = lambda client, framework_root, objective, documents: {
+                "covered": True, "reasoning": None, "suggested_title": None,
+            }
+            try:
+                notes = cli.offer_local_architecture_note_interactive(registry, repository_dir, "Add a REST endpoint.", ["content"])
+            finally:
+                cli.suggest_architecture_coverage_gap = original
+        self.assertEqual([], notes)
+
+    def test_gap_declined_returns_empty_and_writes_no_file(self):
+        with TemporaryDirectory() as temp:
+            registry, repository_dir = self._setup(temp)
+            set_provider(registry, "claude", "subscription")
+            original = cli.suggest_architecture_coverage_gap
+            cli.suggest_architecture_coverage_gap = lambda client, framework_root, objective, documents: {
+                "covered": False, "reasoning": "Not covered.", "suggested_title": "Background Jobs",
+            }
+            responses = iter(["2"])  # decline the "draft a note?" confirm
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                notes = cli.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
+            finally:
+                builtins.input = original_input
+                cli.suggest_architecture_coverage_gap = original
+        self.assertEqual([], notes)
+        self.assertFalse((repository_dir / ".esc-ai" / "local-architecture").exists())
+
+    def test_gap_accepted_writes_note_and_returns_its_path(self):
+        with TemporaryDirectory() as temp:
+            registry, repository_dir = self._setup(temp)
+            set_provider(registry, "claude", "subscription")
+            original = cli.suggest_architecture_coverage_gap
+            cli.suggest_architecture_coverage_gap = lambda client, framework_root, objective, documents: {
+                "covered": False, "reasoning": "Not covered.", "suggested_title": "Background Jobs",
+            }
+            responses = iter(["1", "Use a queue-backed worker."])  # accept, then describe the guidance
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                notes = cli.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
+            finally:
+                builtins.input = original_input
+                cli.suggest_architecture_coverage_gap = original
+            self.assertEqual([".esc-ai/local-architecture/background-jobs.md"], notes)
+            text = (repository_dir / notes[0]).read_text(encoding="utf-8")
+            self.assertIn("status: stub", text)
+            self.assertIn("Use a queue-backed worker.", text)
 
 
 class PlanningInteractiveTests(unittest.TestCase):
@@ -879,6 +1030,225 @@ class PlanningInteractiveTests(unittest.TestCase):
             task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-export"
             self.assertTrue((task_dir / "task.yaml").is_file())
             self.assertIn("Export works", (task_dir / "README.md").read_text())
+
+    def test_offered_local_architecture_note_flows_into_the_written_task(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(root / "db.sqlite"), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            run(["repository", "add", "repo", str(repository_dir)])
+            run(["repository", "analyze", "repo", "--json"])
+            answers_file = root / "answers.json"
+            answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+            run(["repository", "answer", "repo", str(answers_file)])
+            run(["repository", "apply", "repo"])
+
+            original = cli.offer_local_architecture_note_interactive
+            cli.offer_local_architecture_note_interactive = lambda registry, repository_path, objective, components: [
+                ".esc-ai/local-architecture/background-jobs.md"
+            ]
+            responses = iter([
+                "1", "Add background jobs.", "feature-jobs", "repo", "content",
+                "No admin UI.", "Jobs run reliably", "", "1",
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_planning_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+                cli.offer_local_architecture_note_interactive = original
+
+            self.assertEqual(0, code)
+            task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-jobs"
+            readme = (task_dir / "README.md").read_text()
+            self.assertIn("## Local architecture notes (unreviewed)", readme)
+            self.assertIn(".esc-ai/local-architecture/background-jobs.md", readme)
+            task_document = load_yaml(task_dir / "task.yaml")
+            self.assertNotIn("local_architecture_notes", task_document)
+
+    def _onboard(self, root, registry, repository_dir):
+        def run(argv):
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = cli.main(["--db", str(root / "db.sqlite"), "--registry", str(registry), *argv])
+            return code, buffer.getvalue()
+
+        run(["repository", "add", "repo", str(repository_dir)])
+        run(["repository", "analyze", "repo", "--json"])
+        answers_file = root / "answers.json"
+        answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+        run(["repository", "answer", "repo", str(answers_file)])
+        run(["repository", "apply", "repo"])
+
+    def test_no_provider_connected_skips_the_drift_check_silently(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+            self._onboard(root, registry, repository_dir)
+
+            responses = iter([
+                "2", "Fix the broken login page.", "login-fix", "repo",
+                "content", "No new auth providers.", "Login works again.", "",
+                "1",  # confirm apply -- no drift-check prompt in between
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_planning_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+
+            self.assertEqual(0, code)
+            self.assertIn("Planned.", buffer.getvalue())
+            self.assertNotIn("grown from", buffer.getvalue())
+            task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "login-fix"
+            self.assertEqual("fix", load_yaml(task_dir / "task.yaml").get("task", {}).get("work_type", "fix"))
+
+    def test_drift_detected_and_accepted_reclassifies_the_task(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+            self._onboard(root, registry, repository_dir)
+            set_provider(registry, "claude", "subscription")
+
+            original_drift = cli.suggest_work_type_drift
+            cli.suggest_work_type_drift = lambda client, repository_path, work_type, objective, scope_boundary, completion_conditions: {
+                "drifted": True, "suggested_work_type": "feature",
+                "reasoning": "This adds a new password-reset flow, not just a correction.",
+            }
+
+            responses = iter([
+                "2", "Fix the broken login page.", "login-fix", "repo",
+                "2",  # decline "Talk through this plan with AI first?"
+                "content", "No new auth providers.", "Login works again.", "",
+                "1",  # reclassify as `feature`
+                "1",  # confirm apply
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_planning_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+                cli.suggest_work_type_drift = original_drift
+
+            self.assertEqual(0, code)
+            output = buffer.getvalue()
+            self.assertIn("grown from `fix` into `feature`", output)
+            self.assertIn("password-reset flow", output)
+            task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "login-fix"
+            self.assertIn("**Work type:** feature", (task_dir / "README.md").read_text())
+
+    def test_drift_detected_and_declined_keeps_the_original_type(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+            self._onboard(root, registry, repository_dir)
+            set_provider(registry, "claude", "subscription")
+
+            original_drift = cli.suggest_work_type_drift
+            cli.suggest_work_type_drift = lambda client, repository_path, work_type, objective, scope_boundary, completion_conditions: {
+                "drifted": True, "suggested_work_type": "feature", "reasoning": "Looks like new behavior.",
+            }
+
+            responses = iter([
+                "2", "Fix the broken login page.", "login-fix", "repo",
+                "2",  # decline "Talk through this plan with AI first?"
+                "content", "No new auth providers.", "Login works again.", "",
+                "2",  # keep it as `fix`
+                "1",  # confirm apply
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_planning_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+                cli.suggest_work_type_drift = original_drift
+
+            self.assertEqual(0, code)
+            task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "login-fix"
+            self.assertIn("**Work type:** fix", (task_dir / "README.md").read_text())
+
+    def test_no_drift_reported_proceeds_without_a_prompt(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(root / "db.sqlite")
+            self._onboard(root, registry, repository_dir)
+            set_provider(registry, "claude", "subscription")
+
+            original_drift = cli.suggest_work_type_drift
+            cli.suggest_work_type_drift = lambda client, repository_path, work_type, objective, scope_boundary, completion_conditions: {
+                "drifted": False, "suggested_work_type": None, "reasoning": None,
+            }
+
+            responses = iter([
+                "2", "Fix the broken login page.", "login-fix", "repo",
+                "2",  # decline "Talk through this plan with AI first?"
+                "content", "No new auth providers.", "Login works again.", "",
+                "1",  # confirm apply -- no drift-check prompt in between
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_planning_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+                cli.suggest_work_type_drift = original_drift
+
+            self.assertEqual(0, code)
+            self.assertNotIn("grown from", buffer.getvalue())
+            task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "login-fix"
+            self.assertIn("**Work type:** fix", (task_dir / "README.md").read_text())
+
+
+class ConfirmWorkTypeDriftInteractiveTests(unittest.TestCase):
+    def test_no_provider_returns_work_type_unchanged_without_calling_out(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            result = cli.confirm_work_type_drift_interactive(registry, root, "fix", "obj", "scope", ["done"])
+        self.assertEqual("fix", result)
+
+    def test_wrong_provider_route_returns_work_type_unchanged(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            set_provider(registry, "claude", "api-key")
+            result = cli.confirm_work_type_drift_interactive(registry, root, "fix", "obj", "scope", ["done"])
+        self.assertEqual("fix", result)
 
 
 def _conversation_stream(text: str, session_id: str = "ses-1") -> list[dict]:

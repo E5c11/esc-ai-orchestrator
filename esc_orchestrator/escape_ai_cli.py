@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
 from esc_exec.adapters import detect_build_system
+from esc_exec.architecture_lookup import load_architecture_index, resolve_architecture_docs
 from esc_exec.checkpoints import create_checkpoint, checkpoint_path, update_checkpoint
 from esc_exec.claude_code_adapter import (
-    ClaudeCodeClient, ClaudeCodeError, claude_auth_status, claude_cli_available, suggest_onboarding_answers,
+    ClaudeCodeClient, ClaudeCodeError, claude_auth_status, claude_cli_available, suggest_architecture_coverage_gap,
+    suggest_onboarding_answers, suggest_work_type_drift,
 )
 from esc_exec.codex_adapter import codex_auth_status, codex_cli_available
 from esc_exec.conversation import (
@@ -18,13 +21,14 @@ from esc_exec.conversation import (
 )
 from esc_exec.dependencies import validate_dependency_graph
 from esc_exec.indexing import validate_indexes
-from esc_exec.manifests import overall_exit_code, validate_repository
+from esc_exec.local_architecture import write_local_architecture_note
+from esc_exec.manifests import component_manifest_path, overall_exit_code, repository_manifest_path, validate_repository
 from esc_exec.measurement import process_metrics
 from esc_exec.model import ValidationResult
-from esc_exec.onboarding import analyze_repository, apply_onboarding_answers
+from esc_exec.onboarding import ARCHITECTURE_FRAMEWORK_ID, analyze_repository, apply_onboarding_answers
 from esc_exec.planning import (
-    WORK_TYPES, generate_multi_repository_workflow, generate_single_repository_workflow,
-    planning_questions, route_objective,
+    WORK_TYPES, architecture_doc_ids_for_components, generate_multi_repository_workflow,
+    generate_single_repository_workflow, load_repository_index, planning_questions, route_objective,
 )
 from esc_exec.registry import (
     KNOWN_PROVIDERS, SUBSCRIPTION_CAPABLE_PROVIDERS, active_provider, add_route,
@@ -136,6 +140,41 @@ def render_apply_result(result: dict[str, Any]) -> str:
         lines += ["", "No architecture.profile_ids could be suggested for: " + ", ".join(result["empty_profile_id_suggestions"])]
 
     lines += ["", "Nothing has been committed. Review the files above, then commit them yourself."]
+    return "\n".join(lines)
+
+
+def render_onboarding_map(repository_path: Path) -> str:
+    """
+    What onboarding actually produced, read directly from the generated
+    manifests -- not just the list of file paths render_apply_result shows.
+    This is "the map" -- what escape-ai now understands this repository to be,
+    the same information Plan new work's routing and task execution actually
+    read. Read from disk rather than passed in, so a user who hand-edits a
+    manifest (still the only editing path today -- no in-tool editor, an
+    explicit non-goal for now) always sees their real, current state, not a
+    stale snapshot from the apply call that just ran.
+    """
+    repository = load_yaml(repository_manifest_path(repository_path))
+    lines = [f"\nRepository map for `{repository['repository']['id']}` ({repository['repository']['type']}):"]
+    for entry in repository.get("components", []):
+        component_id = entry["id"]
+        manifest = load_yaml(component_manifest_path(repository_path, component_id))
+        component = manifest.get("component", {})
+        purpose = component.get("purpose") or "(no purpose recorded)"
+        profile_ids = manifest.get("architecture", {}).get("profile_ids") or []
+        has_verification = bool(manifest.get("paths", {}).get("verification_profile"))
+        lines.append(f"\n  {component_id}  ({component.get('path')}, {manifest.get('build', {}).get('system')})")
+        lines.append(f"    purpose: {purpose}")
+        lines.append(f"    architecture profiles: {', '.join(profile_ids) if profile_ids else '(none resolved)'}")
+        lines.append(f"    verification gates: {'declared' if has_verification else 'not built for this build system yet'}")
+    excluded = repository.get("excluded_components")
+    if excluded:
+        lines.append(f"\n  Excluded from onboarding: {', '.join(excluded)}")
+    lines.append(
+        "\nThese are real files under .esc-ai/, not a locked format -- edit purpose or "
+        "architecture.profile_ids directly if something's wrong; re-running onboarding "
+        "preserves hand-authored fields rather than overwriting them."
+    )
     return "\n".join(lines)
 
 
@@ -591,7 +630,10 @@ def draft_plan(store: Store, registry: Path, initiative_id: str, work_type: str,
     }
 
 
-def apply_plan(store: Store, registry: Path, initiative_id: str, answers: dict[str, Any]) -> dict[str, Any]:
+def apply_plan(
+    store: Store, registry: Path, initiative_id: str, answers: dict[str, Any],
+    local_architecture_notes_by_repo: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
     """
     A single-repository plan writes one task directly; a multi-repository plan
     chains each repository's task to the previous one in the declared order (the
@@ -599,6 +641,11 @@ def apply_plan(store: Store, registry: Path, initiative_id: str, answers: dict[s
     shape) rather than asking for a full dependency graph through the CLI. Both
     paths validate every reference before writing anything (see
     generate_single_repository_workflow/generate_multi_repository_workflow).
+
+    local_architecture_notes_by_repo (see
+    offer_local_architecture_note_interactive) is keyed by repository_id, same
+    shape as answers["components"] -- omitted entirely for the non-interactive
+    CLI path, which never runs that check.
     """
     draft = store.get_plan_draft(initiative_id)
     if draft is None:
@@ -608,6 +655,7 @@ def apply_plan(store: Store, registry: Path, initiative_id: str, answers: dict[s
     completion_conditions = answers.get("completion_conditions", [])
     scope_boundary = answers.get("scope_boundary", "")
     rollout_needs = answers.get("rollout_needs", "")
+    notes_by_repo = local_architecture_notes_by_repo or {}
 
     if len(repositories) == 1:
         repository_id = repositories[0]
@@ -615,6 +663,7 @@ def apply_plan(store: Store, registry: Path, initiative_id: str, answers: dict[s
         written = generate_single_repository_workflow(
             repository_path, repository_id, initiative_id, draft["objective"], draft["work_type"],
             components_by_repo.get(repository_id, []), scope_boundary, completion_conditions, rollout_needs,
+            local_architecture_notes=notes_by_repo.get(repository_id),
         )
         result = {repository_id: [str(path.relative_to(repository_path)) for path in written]}
     else:
@@ -631,6 +680,8 @@ def apply_plan(store: Store, registry: Path, initiative_id: str, answers: dict[s
             }
             if previous_task_ref:
                 task["depends_on"] = [previous_task_ref]
+            if notes_by_repo.get(repository_id):
+                task["local_architecture_notes"] = notes_by_repo[repository_id]
             tasks[repository_id] = task
             previous_task_ref = f"{repository_id}/{task_id}"
         written_paths = generate_multi_repository_workflow(registry, initiative_id, draft["objective"], draft["work_type"], tasks)
@@ -944,6 +995,98 @@ def _unfinished_onboarding_label(store: Store, registry: Path, repository_id: st
     return f"{repository_id} ({pending} question(s) pending){warning}"
 
 
+def confirm_work_type_drift_interactive(
+    registry: Path, repository_path: Path, work_type: str, objective: str,
+    scope_boundary: str, completion_conditions: list[str],
+) -> str:
+    """
+    plan/active/planning-consistency-checks.md design section 1 -- runs once
+    scope_boundary/completion_conditions are known (works identically regardless
+    of whether the static question path or a future conversation path produced
+    them, per that plan's own framing), checks whether the declared work_type
+    still fits, and if drift is flagged, asks the human to either reclassify or
+    explicitly stay bounded to the original -- never reclassifies silently,
+    never blocks.
+
+    Provider-gated the same "no wall" way as suggest_answers_via_provider --
+    returns work_type unchanged, at zero cost, whenever no claude/subscription
+    provider is connected. repository_path is only used as the subprocess's
+    working directory (the check is text-only, grants zero tools -- see
+    suggest_work_type_drift's docstring), so any resolvable repository from the
+    plan works, including for a multi-repository plan.
+    """
+    provider = active_provider(registry)
+    if provider != {"id": "claude", "route": "subscription"}:
+        return work_type
+    result = suggest_work_type_drift(
+        ClaudeCodeClient(), repository_path, work_type, objective, scope_boundary, completion_conditions,
+    )
+    if not result["drifted"]:
+        return work_type
+    suggested = result["suggested_work_type"]
+    print(f"\nThis looks like it may have grown from `{work_type}` into `{suggested}`: {result['reasoning']}")
+    choice = select_menu(
+        "Reclassify, or keep it bounded to the original type?",
+        [f"Reclassify as `{suggested}`", f"Keep it as `{work_type}`"],
+    )
+    return suggested if choice == 0 else work_type
+
+
+def offer_local_architecture_note_interactive(
+    registry: Path, repository_path: Path, objective: str, components: list[str],
+) -> list[str]:
+    """
+    plan/active/planning-consistency-checks.md design section 2 -- checks
+    whether the involved components' already-resolved architecture.profile_ids
+    (resolved once, generically, at onboarding time) actually give real
+    guidance for this specific objective, and if not, offers to draft a local,
+    unreviewed architecture note (esc_exec.local_architecture) rather than
+    silently proceeding with generic, not-really-relevant profile_ids.
+
+    Warn-and-proceed, never a hard gate (explicit decision this session):
+    returns [] (no notes) in every case where the check can't run or the human
+    declines -- provider not connected, architecture framework route not
+    resolvable, nothing resolved to check coverage against and the human
+    declines anyway, or a covered result -- the plan proceeds exactly as today.
+    Never drafts a note without the human explicitly confirming they want one.
+
+    Returns repository-root-relative paths of any notes drafted this pass,
+    ready to thread into generate_single_repository_workflow's
+    local_architecture_notes parameter.
+    """
+    provider = active_provider(registry)
+    if provider != {"id": "claude", "route": "subscription"}:
+        return []
+    try:
+        framework_root = resolve_route(registry, "frameworks", ARCHITECTURE_FRAMEWORK_ID)
+        architecture_index = load_architecture_index(framework_root)
+    except (KeyError, FileNotFoundError, ValueError):
+        return []
+
+    index = load_repository_index(repository_path)
+    doc_ids = architecture_doc_ids_for_components(repository_path, index, components)
+    documents, _missing = resolve_architecture_docs(doc_ids, architecture_index)
+    result = suggest_architecture_coverage_gap(ClaudeCodeClient(), framework_root, objective, documents)
+    if result["covered"]:
+        return []
+
+    print(f"\nArchitecture framework coverage looks thin for this objective: {result['reasoning']}")
+    if not confirm(f"Draft a local architecture note (\"{result['suggested_title']}\")? Unreviewed, local to this repository only."):
+        return []
+    try:
+        body = ask("Briefly describe the guidance this note should capture:").strip()
+    except (EOFError, KeyboardInterrupt):
+        return []
+    slug = re.sub(r"[^a-z0-9]+", "-", result["suggested_title"].lower()).strip("-") or "note"
+    note_path = write_local_architecture_note(
+        repository_path, slug,
+        doc_id=f"LOCAL-{slug.upper()}", doc_type="pattern", layer="pattern",
+        platform=["all"], architecture=["all"], title=result["suggested_title"],
+        body=body or "(no detail captured yet -- expand this before promoting it.)",
+    )
+    return [str(note_path.relative_to(repository_path))]
+
+
 def confirm_components_interactive(components: list[dict[str, str]]) -> set[str] | None:
     """
     Always-shown component confirmation step (plan/active/generic-multi-component-
@@ -1109,6 +1252,14 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
         print(f"Apply failed: {exc}")
         return 1
     print(render_apply_result(result))
+    print(render_onboarding_map(repository_path))
+
+    try:
+        choice = ask(f"\nPress Enter to plan new work for `{repository_id}` now, or anything else to return to the main menu:").strip()
+    except (EOFError, KeyboardInterrupt):
+        return 0
+    if not choice:
+        return run_planning_interactive(store, registry, prefilled_repository_id=repository_id)
     return 0
 
 
@@ -1218,7 +1369,13 @@ def run_planning_conversation_interactive(
     return last_text
 
 
-def run_planning_interactive(store: Store, registry: Path) -> int:
+def run_planning_interactive(store: Store, registry: Path, prefilled_repository_id: str | None = None) -> int:
+    """
+    prefilled_repository_id skips the "Repositories:" question entirely --
+    used when arriving here straight from a just-finished onboarding (see
+    run_onboarding_interactive's post-apply prompt) so momentum isn't lost
+    re-typing/re-selecting the repo you were just looking at.
+    """
     choice = select_menu(render_work_types(), WORK_TYPES)
     if choice is None:
         return 0
@@ -1227,11 +1384,14 @@ def run_planning_interactive(store: Store, registry: Path) -> int:
     try:
         objective = ask("Objective:").strip()
         initiative_id = ask("Initiative/task ID (a short slug, e.g. feature-user-export):").strip()
-        repos_raw = ask("Repositories (comma-separated IDs or paths):").strip()
+        if prefilled_repository_id:
+            repository_values = [prefilled_repository_id]
+        else:
+            repos_raw = ask("Repositories (comma-separated IDs or paths):").strip()
+            repository_values = [value.strip() for value in repos_raw.split(",") if value.strip()]
     except (EOFError, KeyboardInterrupt):
         print("\nCancelled -- nothing was written.")
         return 0
-    repository_values = [value.strip() for value in repos_raw.split(",") if value.strip()]
 
     try:
         draft = draft_plan(store, registry, initiative_id, work_type, objective, repository_values)
@@ -1265,12 +1425,35 @@ def run_planning_interactive(store: Store, registry: Path) -> int:
 
     store.save_plan_pending_answers(initiative_id, answers)
 
+    try:
+        _, repository_path_for_check = resolve_repository(draft["repositories"][0], registry)
+        confirmed_work_type = confirm_work_type_drift_interactive(
+            registry, repository_path_for_check, work_type, objective,
+            answers.get("scope_boundary", ""), answers.get("completion_conditions", []),
+        )
+    except (KeyError, FileNotFoundError):
+        confirmed_work_type = work_type  # repo no longer resolvable -- skip the check, don't block planning over it
+    if confirmed_work_type != work_type:
+        store.save_plan_draft(initiative_id, confirmed_work_type, objective, draft["repositories"], draft["routing"], draft["questions"])
+
+    local_architecture_notes_by_repo: dict[str, list[str]] = {}
+    for repository_id in draft["repositories"]:
+        try:
+            _, repository_path_for_notes = resolve_repository(repository_id, registry)
+        except (KeyError, FileNotFoundError):
+            continue
+        notes = offer_local_architecture_note_interactive(
+            registry, repository_path_for_notes, objective, answers.get("components", {}).get(repository_id, []),
+        )
+        if notes:
+            local_architecture_notes_by_repo[repository_id] = notes
+
     if not confirm("Generate workflow files from these answers?"):
         print("Cancelled -- nothing was written. The draft and answers are saved; resume anytime by running escape-ai again.")
         return 0
 
     try:
-        result = apply_plan(store, registry, initiative_id, answers)
+        result = apply_plan(store, registry, initiative_id, answers, local_architecture_notes_by_repo)
     except (OSError, ValueError) as exc:
         print(f"Apply failed: {exc}")
         return 1
