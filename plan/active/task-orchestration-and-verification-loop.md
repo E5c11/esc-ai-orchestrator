@@ -247,9 +247,10 @@ marked as such.
    produces a standalone document of that kind) has the identical membership-only gap
    — not fixed here since nothing consumes it yet; revisit only if/when something
    starts producing that document.
-2. **Task-impact analysis.** New function mirroring `dependencies.py::analyze_impact`
+2. ~~**Task-impact analysis.**~~ New function mirroring `dependencies.py::analyze_impact`
    that, given a completed task, returns which other tasks in the initiative are now
-   fully unblocked. Depends on (1).
+   fully unblocked. Depends on (1). Scoped out into its own plan, done 2026-07-23:
+   [`task-impact-analysis.md`](../done/task-impact-analysis.md).
 3. ~~**Provider-agnostic gate execution.**~~ escape-ai's own code invokes a
    verification gate's command directly (subprocess, in the same workspace the agent
    edited) and captures the real exit code — independent of whichever adapter did the
@@ -328,7 +329,7 @@ marked as such.
    the pause once usage tracking is real. Do not stub a fake/hardcoded usage check to
    unblock this early — that would be worse than no check at all.
 
-Tasks 1, 3, 4, 5, and 6 are done (see above). Tasks 2 and 8 have everything they need
-designed. Task 7 is designed but depends on 1/2/5 — 1 and 5 are now done, so 7 is
-still blocked only on 2. Task 9 is real but explicitly sequenced after a *different*
-plan's work — don't pull it forward.
+Tasks 1, 2, 3, 4, 5, and 6 are done (see above). Task 8 has everything it needs
+designed and can be built any time. Task 7 is designed and now fully unblocked —
+1, 2, and 5, everything it depended on, are all done. Task 9 is real but explicitly
+sequenced after a *different* plan's work — don't pull it forward.

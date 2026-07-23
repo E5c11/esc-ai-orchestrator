@@ -38,6 +38,7 @@ from esc_exec.registry import (
 from esc_exec.roadmap import load_project_roadmap, save_project_roadmap
 from esc_exec.yaml_io import load_yaml
 
+from esc_orchestrator.initiative import analyze_task_impact
 from esc_orchestrator.runtime import ClaudeCodeRuntime, CodexRuntime, OpenCodeRuntime
 from esc_orchestrator.scaffold_wizards import render_wizard_suggestion
 from esc_orchestrator.scheduler import Scheduler
@@ -1735,6 +1736,9 @@ def build_parser() -> argparse.ArgumentParser:
     task_promote = task_commands.add_parser("promote-checkpoint")
     task_promote.add_argument("repository")
     task_promote.add_argument("task_id")
+
+    task_impact = task_commands.add_parser("impact", help="Show which other initiative tasks this completed task unblocks")
+    task_impact.add_argument("task_id")
     task_promote.add_argument("--yes", action="store_true", help="Actually promote; without this, preview only")
 
     resume_cmd = subcommands.add_parser("resume", help="Show active work across registered repositories")
@@ -1919,6 +1923,15 @@ def _dispatch_task(args: argparse.Namespace, store: Store, registry: Path) -> in
             return 0
         path = promote_checkpoint(repository_path, args.task_id, candidate)
         print(f"Promoted checkpoint to {path}")
+        return 0
+
+    if args.task_command == "impact":
+        try:
+            document = analyze_task_impact(store, registry, args.task_id)
+        except ValueError as exc:
+            print(f"INVALID    {exc}")
+            return 1
+        print(json.dumps(document, indent=2))
         return 0
 
     return 1

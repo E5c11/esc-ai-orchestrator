@@ -1894,6 +1894,72 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             from esc_exec.model import ManifestState
             self.assertEqual(ManifestState.VALID, validate_contract("checkpoint", durable_path).state)
 
+    def test_task_impact_reports_newly_unblocked_cross_repository_task(self):
+        """
+        Task 2: a multi-repository initiative's second task (repo-b) depends_on the
+        first (repo-a). Once repo-a's task actually completes (through real
+        Store/Scheduler execution, not a synthetic shortcut), `task impact` must
+        report repo-b's task as newly unblocked -- exercised through the real CLI,
+        not just at the analyze_task_impact unit level (see tests/test_initiative.py).
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            registry = root / "registry.yaml"
+            repo_a = root / "repo-a"
+            repo_b = root / "repo-b"
+            _make_gradle_repository(repo_a)
+            _make_gradle_repository(repo_b)
+            store = Store(db)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            for repo_id, repository_dir in (("repo-a", repo_a), ("repo-b", repo_b)):
+                run(["repository", "add", repo_id, str(repository_dir)])
+                run(["repository", "analyze", repo_id, "--json"])
+                answers_file = root / f"{repo_id}-answers.json"
+                answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+                run(["repository", "answer", repo_id, str(answers_file)])
+                code, out = run(["repository", "apply", repo_id])
+                self.assertEqual(0, code, out)
+
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Cross-repo export.",
+                "repositories": ["repo-a", "repo-b"],
+            }), encoding="utf-8")
+            run(["plan", "draft", "feature-cross", str(request_file)])
+            answers_file = root / "plan-answers.json"
+            answers_file.write_text(json.dumps({
+                "components": {"repo-a": ["content"], "repo-b": ["content"]},
+                "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+            }), encoding="utf-8")
+            run(["plan", "answer", "feature-cross", str(answers_file)])
+            code, out = run(["plan", "apply", "feature-cross"])
+            self.assertEqual(0, code, out)
+
+            # Before repo-a's task has ever run, Store has no record of it yet.
+            code, out = run(["task", "impact", "feature-cross-repo-a"])
+            self.assertEqual(1, code, out)
+            self.assertIn("no such task", out)
+
+            result = cli.execute_task(
+                store, registry, "repo-a", repo_a, "feature-cross-repo-a",
+                {"id": "claude", "route": "api-key"}, runtime=_FakeSucceedingRuntime(root / "runs"),
+            )
+            self.assertEqual("succeeded", result["status"])
+
+            code, out = run(["task", "impact", "feature-cross-repo-a"])
+            self.assertEqual(0, code, out)
+            document = json.loads(out)
+            self.assertEqual("feature-cross", document["initiative_id"])
+            self.assertEqual(["repo-b/feature-cross-repo-b"], document["newly_unblocked"])
+            self.assertEqual({}, document["still_blocked"])
+
     def test_task_run_without_yes_only_previews(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
