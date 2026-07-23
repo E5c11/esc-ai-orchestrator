@@ -9,6 +9,7 @@ from esc_exec.codex_adapter import CodexAdapter, CodexClient
 from esc_exec.opencode_adapter import OpenCodeAdapter, OpenCodeClient
 from esc_exec.registry import resolve_route
 from esc_exec.task_context import build_verification_plan
+from esc_exec.verification_execution import execute_verification_plan
 from esc_exec.json_io import write_json
 from esc_exec.yaml_io import write_yaml
 
@@ -17,8 +18,11 @@ class _AdapterRuntime:
     """
     Shared `Runtime.execute(contracts) -> Path` glue: write the in-memory portable
     contracts to temp YAML, build the verification plan, delegate to whichever
-    adapter this runtime wraps. Provider-agnostic -- unlike tools_for_policy/token
-    translation, nothing here depends on which agent runtime does the actual work.
+    adapter this runtime wraps, then independently execute that plan's gates
+    ourselves -- the agent's own report of what it did is never the authoritative
+    result (see plan/active/task-orchestration-and-verification-loop.md). Provider-
+    agnostic -- unlike tools_for_policy/token translation, nothing here depends on
+    which agent runtime did the actual editing.
     """
     adapter: Any
     registry: Path
@@ -38,6 +42,7 @@ class _AdapterRuntime:
                 paths["task"], paths["workspace"], paths["adapter"], paths["policy"]
             )
             write_json(run_dir / "verification-plan.json", plan)
+            execute_verification_plan(plan, repository, run_dir)
             return run_dir
 
 

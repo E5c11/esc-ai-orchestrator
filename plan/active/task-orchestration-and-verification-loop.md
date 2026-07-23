@@ -234,9 +234,31 @@ marked as such.
    `verification-summary.json`. Depends on (3). Scoped out into its own plan, done
    2026-07-21:
    [`junit-report-verification-enhancement.md`](../done/junit-report-verification-enhancement.md).
-5. **Independently-verified result replaces agent self-report.** Wire (3)/(4)'s result
-   into `Store`/`Scheduler` as the run's authoritative status, instead of trusting
-   whatever the agent's own final message claims. Depends on (3).
+5. ~~**Independently-verified result replaces agent self-report.**~~ Wire (3)/(4)'s
+   result into `Store`/`Scheduler` as the run's authoritative status, instead of
+   trusting whatever the agent's own final message claims. Depends on (3). Done
+   2026-07-23 in `esc-ai-orchestrator`, no separate plan doc needed (design held up
+   against the code unchanged): `esc_orchestrator/runtime.py`'s `_AdapterRuntime.execute`
+   now calls `execute_verification_plan` right after the adapter returns, alongside the
+   `verification-plan.json` it already wrote; `esc_orchestrator/scheduler.py`'s `_work`
+   reads the resulting `verification-result.json` out of the run's `output_path` and
+   only marks a run `"succeeded"` when its top-level `status == "passed"` — a
+   `"failed"` verification result now marks the run `"failed"` (with a summary of
+   which gate/check failed as the run's `error`) even though the adapter itself never
+   raised. If no `verification-result.json` exists at all (a fake/legacy runtime that
+   doesn't produce one), Scheduler falls back to trusting the runtime's own
+   return-vs-raise signal, same as before this task — a deliberate compatibility
+   fallback, not a gap, since every real `_AdapterRuntime`-based runtime always
+   produces one now. Tests: `tests/test_orchestrator.py` — one exercising the real
+   `build_verification_plan` -> `execute_verification_plan` pipeline through
+   `_AdapterRuntime.execute` with a fake adapter and a real onboarded fixture repo
+   (`test_adapter_runtime_executes_verification_plan_independently`), two exercising
+   Scheduler's status derivation via `FakeRuntime`'s new optional
+   `verification_status` (`test_verification_result_passed_still_succeeds`,
+   `test_verification_result_failed_marks_run_failed_not_agent_self_report`). Full
+   suite: 123 -> 126 passing. Does not yet build a checkpoint for a verification-
+   failed run (no exception was raised, so the existing except-block checkpoint path
+   never fires) — that's task 6, deliberately not pulled forward here.
 6. **Not-clean path into existing checkpoints.** Route a not-clean verified result into
    the existing `checkpoint_document`/`promote_checkpoint` mechanism, same as an
    uncaught exception does today — this is a new trigger for an existing path, not a
@@ -258,6 +280,7 @@ marked as such.
    the pause once usage tracking is real. Do not stub a fake/hardcoded usage check to
    unblock this early — that would be worse than no check at all.
 
-Tasks 3 and 4 are done (see linked plans above). Tasks 1, 2, 5, 6, and 8 have
-everything they need designed. Task 7 is designed but depends on 1/2/5. Task 9 is real
-but explicitly sequenced after a *different* plan's work — don't pull it forward.
+Tasks 3, 4, and 5 are done (see above). Tasks 1, 2, 6, and 8 have everything they need
+designed. Task 7 is designed but depends on 1/2/5 — 5 is now done, so 7 is still
+blocked only on 1/2. Task 9 is real but explicitly sequenced after a *different*
+plan's work — don't pull it forward.
