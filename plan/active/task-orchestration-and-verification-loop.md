@@ -222,13 +222,18 @@ marked as such.
 2. **Task-impact analysis.** New function mirroring `dependencies.py::analyze_impact`
    that, given a completed task, returns which other tasks in the initiative are now
    fully unblocked. Depends on (1).
-3. **Provider-agnostic gate execution.** escape-ai's own code invokes a verification
-   gate's command directly (subprocess, in the same workspace the agent edited) and
-   captures the real exit code — independent of whichever adapter did the editing. No
-   dependencies; can proceed in parallel with (1)/(2).
-4. **JUnit-XML enhancement.** Where a gate's `source_format` is `junit-xml`, locate the
-   report the invocation in (3) produced and run it through `summarize_junit` (already
-   exists, already tested) into a validated `verification-summary.json`. Depends on (3).
+3. ~~**Provider-agnostic gate execution.**~~ escape-ai's own code invokes a
+   verification gate's command directly (subprocess, in the same workspace the agent
+   edited) and captures the real exit code — independent of whichever adapter did the
+   editing. No dependencies; can proceed in parallel with (1)/(2). Scoped out into its
+   own plan, done 2026-07-21:
+   [`provider-agnostic-gate-execution.md`](../done/provider-agnostic-gate-execution.md).
+4. ~~**JUnit-XML enhancement.**~~ Where a gate's `source_format` is `junit-xml`,
+   locate the report the invocation in (3) produced and run it through
+   `summarize_junit` (already exists, already tested) into a validated
+   `verification-summary.json`. Depends on (3). Scoped out into its own plan, done
+   2026-07-21:
+   [`junit-report-verification-enhancement.md`](../done/junit-report-verification-enhancement.md).
 5. **Independently-verified result replaces agent self-report.** Wire (3)/(4)'s result
    into `Store`/`Scheduler` as the run's authoritative status, instead of trusting
    whatever the agent's own final message claims. Depends on (3).
@@ -253,6 +258,6 @@ marked as such.
    the pause once usage tracking is real. Do not stub a fake/hardcoded usage check to
    unblock this early — that would be worse than no check at all.
 
-Tasks 1-6 and 8 have everything they need designed. Task 7 is designed but depends on
-1/2/5. Task 9 is real but explicitly sequenced after a *different* plan's work — don't
-pull it forward.
+Tasks 3 and 4 are done (see linked plans above). Tasks 1, 2, 5, 6, and 8 have
+everything they need designed. Task 7 is designed but depends on 1/2/5. Task 9 is real
+but explicitly sequenced after a *different* plan's work — don't pull it forward.
