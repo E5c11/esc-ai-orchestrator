@@ -1,6 +1,6 @@
 # Task Orchestration and Verification Loop — Plan
 
-**Status:** Active
+**Status:** Implemented
 **Date:** 2026-07-19
 **Objective:** Close the loop between "escape-ai prepares a bounded task" and "escape-ai
 prepares the next one" — a real task-level dependency graph (not a straight line),
@@ -250,19 +250,19 @@ marked as such.
 2. ~~**Task-impact analysis.**~~ New function mirroring `dependencies.py::analyze_impact`
    that, given a completed task, returns which other tasks in the initiative are now
    fully unblocked. Depends on (1). Scoped out into its own plan, done 2026-07-23:
-   [`task-impact-analysis.md`](../done/task-impact-analysis.md).
+   [`task-impact-analysis.md`](task-impact-analysis.md).
 3. ~~**Provider-agnostic gate execution.**~~ escape-ai's own code invokes a
    verification gate's command directly (subprocess, in the same workspace the agent
    edited) and captures the real exit code — independent of whichever adapter did the
    editing. No dependencies; can proceed in parallel with (1)/(2). Scoped out into its
    own plan, done 2026-07-21:
-   [`provider-agnostic-gate-execution.md`](../done/provider-agnostic-gate-execution.md).
+   [`provider-agnostic-gate-execution.md`](provider-agnostic-gate-execution.md).
 4. ~~**JUnit-XML enhancement.**~~ Where a gate's `source_format` is `junit-xml`,
    locate the report the invocation in (3) produced and run it through
    `summarize_junit` (already exists, already tested) into a validated
    `verification-summary.json`. Depends on (3). Scoped out into its own plan, done
    2026-07-21:
-   [`junit-report-verification-enhancement.md`](../done/junit-report-verification-enhancement.md).
+   [`junit-report-verification-enhancement.md`](junit-report-verification-enhancement.md).
 5. ~~**Independently-verified result replaces agent self-report.**~~ Wire (3)/(4)'s
    result into `Store`/`Scheduler` as the run's authoritative status, instead of
    trusting whatever the agent's own final message claims. Depends on (3). Done
