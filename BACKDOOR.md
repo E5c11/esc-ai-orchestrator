@@ -133,7 +133,7 @@ escape-ai provider auth <name> [--route subscription|api-key]
 route). Skip this if `escape-ai resume` (below) already shows work with no provider
 error.
 
-## Step 4 — run every currently-ready task, in parallel
+## Step 4 — run whichever ready tasks are actually relevant, in parallel
 
 Single-repository plan — there's only ever one task, nothing to parallelize:
 
@@ -167,36 +167,49 @@ multiple tasks are genuinely independent (whether by that edit or because a futu
 in parallel — this limitation is about what Step 2 generates today, not what Step 4
 can execute.
 
-**Dispatch every entry in that list at once, using your own native parallel/subagent
-mechanism** (e.g. multiple tool calls in a single message, or your equivalent) — one
-subagent per ready task, each running:
+**Treat this list as a menu, not a mandate.** `plan ready` is scoped to one
+initiative already, so it never shows you tasks from unrelated work — but an
+initiative can still legitimately bundle several tasks that have nothing to do with
+each other beyond sharing an `initiative_id` (e.g. a grab-bag of small independent
+fixes planned together). Decide which entries are actually relevant to what you're
+being asked to do right now — that might be all of them, or just one, or some
+subset. Don't dispatch a ready task just because it's on the list.
+
+**For whichever subset you decide to run, dispatch all of *those* at once, using
+your own native parallel/subagent mechanism** (e.g. multiple tool calls in a single
+message, or your equivalent) if there's more than one — one subagent per task, each
+running:
 
 ```
 escape-ai task run <repository-id> <task-id> --yes
 ```
 
-for its own `"repository/task-id"` entry (split on the first `/`). Do not run these
-one at a time in a loop in the main session if you have a way to run them
-concurrently — that's the whole point of this step. It's safe: `escape-ai` itself
-guards against two processes racing to submit the same task twice, even across real
-separate OS processes, not just threads.
+for its own `"repository/task-id"` entry (split on the first `/`). Don't run several
+relevant, independent tasks one at a time in a loop in the main session if you have
+a way to run them concurrently — that's the whole point of this step, once you've
+picked what's actually in scope. It's safe: `escape-ai` itself guards against two
+processes racing to submit the same task twice, even across real separate OS
+processes, not just threads. A task you deliberately leave undispatched just stays
+that way — nothing auto-advances it on your behalf; it'll still be there next time
+you run `plan ready` for this initiative.
 
 You do not need to poll and re-dispatch after this wave finishes. Each dispatched
-task's own process keeps running until nothing more auto-advances from it — and
-because completion state is shared through the same on-disk store every process
-reads, a task blocked on outputs from *two* different parallel branches still gets
-picked up correctly, by whichever branch's process happens to finish last. Confirm
-the whole initiative is clear with:
+task's own process keeps running until nothing more auto-advances *from what you
+dispatched* — and because completion state is shared through the same on-disk store
+every process reads, a task blocked on outputs from *two* different parallel
+branches you dispatched still gets picked up correctly, by whichever branch's
+process happens to finish last. Confirm the wave you dispatched actually landed with:
 
 ```
 escape-ai resume --json
 ```
 
 which lists every active task across every registered repository with its latest run
-status and whether a checkpoint is pending review. If anything still shows no run
-status at all once every dispatched subagent has returned, run `plan ready` again —
-this should be rare (it means something dispatched by a subagent is still catching
-up), not the normal case.
+status and whether a checkpoint is pending review — this will legitimately still show
+`null`/no-run-yet for anything you deliberately left undispatched, that's expected,
+not a problem to chase. If a task you *did* dispatch still shows no run status at all
+once its subagent has returned, run `plan ready` again — that should be rare (it
+means something is still catching up), not the normal case.
 
 ## When a run stops — two different reasons, two different responses
 
