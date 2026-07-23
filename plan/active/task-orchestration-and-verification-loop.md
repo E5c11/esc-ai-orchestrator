@@ -213,12 +213,40 @@ whole plan, each "Phase" maps to one task here), in `esc-ai-execution-framework`
 `esc-ai-orchestrator` unless noted. Listed in dependency order; independent ones are
 marked as such.
 
-1. **Task-level dependency graph.** Change `generate_multi_repository_workflow` to
+1. ~~**Task-level dependency graph.**~~ Change `generate_multi_repository_workflow` to
    accept and validate an arbitrary `depends_on` graph (it currently only ever chains
    linearly by declared repository order regardless of what's passed) plus real
    topological cycle detection (today it only checks that a reference is a declared
    initiative member, not that the graph is acyclic — mirror
    `architecture_lookup.py::resolve_architecture_docs`'s approach). No dependencies.
+   Done 2026-07-23 in `esc-ai-execution-framework`, no separate plan doc needed.
+   **Correction found while implementing:** the "chains linearly by declared order"
+   behavior does not actually live in `generate_multi_repository_workflow` itself —
+   that function already threaded through whatever `depends_on` graph it was handed,
+   arbitrary shape and all; the linear-chain behavior lives one layer up, in
+   `esc-ai-orchestrator`'s `apply_plan` (`escape_ai_cli.py`), which today always
+   *synthesizes* a straight `depends_on` chain before calling this function — a
+   separate, later concern, not touched here. What this function actually lacked was
+   cycle detection: its only `depends_on` check was declared-set membership. Also
+   confirmed `architecture_lookup.py::resolve_architecture_docs` cannot be mirrored
+   for cycle detection specifically — despite doing a DFS over a `requires` adjacency,
+   it only tracks a single "visited" set to stop infinite recursion and never actually
+   detects or reports a cycle (see its own `test_cycle_does_not_infinite_loop`, which
+   asserts exactly that — no exception). Added `_find_dependency_cycle` (`planning.py`):
+   DFS over the `depends_on` graph across every declared task, with the
+   currently-on-this-path ("grey") set `resolve_architecture_docs` is missing,
+   returning a human-readable trace (e.g. `"a/x -> b/y -> a/x"`) for the first cycle
+   found. Wired into the existing "validate everything, then write" two-pass
+   structure, so a cycle is reported alongside any other validation error and nothing
+   is written to any repository if one exists. Tests (`tests/test_planning.py`): a
+   two-task cycle, a self-referencing task, and — proving the graph really is
+   arbitrary, not just chain-with-a-cycle-check — a genuine diamond (two independent
+   tasks depending on the same upstream task, neither on the other) is accepted.
+   Suite: 391 -> 394 passing. **Noted but explicitly out of scope:** `contracts.py`'s
+   separate validator for the dormant `initiative` schema kind (no code currently
+   produces a standalone document of that kind) has the identical membership-only gap
+   — not fixed here since nothing consumes it yet; revisit only if/when something
+   starts producing that document.
 2. **Task-impact analysis.** New function mirroring `dependencies.py::analyze_impact`
    that, given a completed task, returns which other tasks in the initiative are now
    fully unblocked. Depends on (1).
@@ -300,7 +328,7 @@ marked as such.
    the pause once usage tracking is real. Do not stub a fake/hardcoded usage check to
    unblock this early — that would be worse than no check at all.
 
-Tasks 3, 4, 5, and 6 are done (see above). Tasks 1, 2, and 8 have everything they need
-designed. Task 7 is designed but depends on 1/2/5 — 5 is now done, so 7 is still
-blocked only on 1/2. Task 9 is real but explicitly sequenced after a *different*
+Tasks 1, 3, 4, 5, and 6 are done (see above). Tasks 2 and 8 have everything they need
+designed. Task 7 is designed but depends on 1/2/5 — 1 and 5 are now done, so 7 is
+still blocked only on 2. Task 9 is real but explicitly sequenced after a *different*
 plan's work — don't pull it forward.
