@@ -338,6 +338,120 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual("failed", store.get_task("task-b")["status"])
             scheduler.close()
 
+    def test_submit_if_new_is_race_safe_under_concurrent_workers(self):
+        """
+        Task 8: Store's existing threading.Lock has never actually been exercised by
+        more than one thread. Twenty threads race to submit_if_new the *same*
+        task_id concurrently -- exactly one may win (get a real task_id/run_id back);
+        the rest must see the row the winner already created and no-op, never a
+        second row for the same task_id.
+        """
+        with TemporaryDirectory() as temp:
+            store = Store(Path(temp) / "db.sqlite")
+            results: list[tuple[str, str] | None] = []
+            results_lock = threading.Lock()
+
+            def attempt():
+                result = store.submit_if_new(contracts())
+                with results_lock:
+                    results.append(result)
+
+            threads = [threading.Thread(target=attempt) for _ in range(20)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            successes = [result for result in results if result is not None]
+            self.assertEqual(1, len(successes))
+            self.assertEqual(20, len(results))
+            row_count = store.connection.execute(
+                "SELECT COUNT(*) AS n FROM runs WHERE task_id=?", ("task-1",)
+            ).fetchone()["n"]
+            self.assertEqual(1, row_count)
+
+    def test_worker_pool_processes_many_tasks_concurrently_without_corruption(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            scheduler = Scheduler(store, FakeRuntime(root / "runs"), registry, workers=5)
+            task_ids = []
+            for index in range(20):
+                task_contracts = contracts()
+                task_contracts["task"]["task"]["id"] = f"task-{index}"
+                task_id, _ = scheduler.submit(task_contracts)
+                task_ids.append(task_id)
+            scheduler.queue.join()
+            for task_id in task_ids:
+                self.assertEqual("succeeded", store.get_task(task_id)["status"])
+            scheduler.close()
+
+    def test_diamond_dependency_advancement_never_double_submits_shared_downstream_task(self):
+        """
+        Task 8: task-d depends on both task-a and task-b. Under a real multi-worker
+        pool, task-a and task-b can finish on two different threads at roughly the
+        same moment, and each independently discovers task-d as newly unblocked -- a
+        genuine check-then-act race the single-worker model never had a chance to
+        hit. A `threading.Barrier` forces that overlap deterministically rather than
+        hoping for it. `submit_if_new`'s atomic check-and-insert must ensure task-d
+        is submitted -- and therefore runs -- exactly once.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            # generate_multi_repository_workflow writes every declared task's
+            # task.yaml upfront, root tasks included -- task-a/task-b need their own
+            # on-disk declarations too, or task-b's completion analysis can't see
+            # task-a already succeeded (and vice versa) once neither is the specific
+            # task an analyze_task_impact call is itself about.
+            self._write_task_yaml(repository_dir, "task-a", {"id": "feature-x"})
+            self._write_task_yaml(repository_dir, "task-b", {"id": "feature-x"})
+            self._write_task_yaml(
+                repository_dir, "task-d", {"id": "feature-x", "depends_on": ["repo/task-a", "repo/task-b"]},
+            )
+
+            barrier = threading.Barrier(2)
+
+            class RendezvousRuntime:
+                def __init__(self, output_root: Path):
+                    self.output_root = output_root
+
+                def execute(self, task_contracts):
+                    task_id = task_contracts["task"]["task"]["id"]
+                    if task_id in ("task-a", "task-b"):
+                        barrier.wait(timeout=5)
+                    path = self.output_root / task_id
+                    path.mkdir(parents=True)
+                    return path
+
+            scheduler = Scheduler(store, RendezvousRuntime(root / "runs"), registry, workers=5)
+            task_a = contracts()
+            task_a["task"]["task"]["id"] = "task-a"
+            task_a["task"]["task"]["initiative"] = {"id": "feature-x"}
+            task_b = contracts()
+            task_b["task"]["task"]["id"] = "task-b"
+            task_b["task"]["task"]["initiative"] = {"id": "feature-x"}
+            scheduler.submit(task_a)
+            scheduler.submit(task_b)
+            scheduler.queue.join()
+
+            self.assertEqual("succeeded", store.get_task("task-a")["status"])
+            self.assertEqual("succeeded", store.get_task("task-b")["status"])
+            self.assertEqual("succeeded", store.get_task("task-d")["status"])
+            row_count = store.connection.execute(
+                "SELECT COUNT(*) AS n FROM runs WHERE task_id=?", ("task-d",)
+            ).fetchone()["n"]
+            self.assertEqual(1, row_count)
+            scheduler.close()
+
     def test_verification_result_failed_marks_run_failed_not_agent_self_report(self):
         """
         The runtime itself never raised (the agent's own self-report was "done") --

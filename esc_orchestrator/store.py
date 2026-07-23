@@ -19,7 +19,10 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
-        self.lock = threading.Lock()
+        # RLock, not Lock: several read methods below call another locked method
+        # of this same Store (e.g. output_document -> get_run) from the same
+        # thread, which a plain Lock would deadlock on re-acquiring.
+        self.lock = threading.RLock()
         self.connection.executescript("""
         CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, status TEXT NOT NULL, contracts TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, task_id TEXT NOT NULL, status TEXT NOT NULL, output_path TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -51,6 +54,33 @@ class Store:
             self._event(run_id, "run.queued", {"task_id": task_id})
         return task_id, run_id
 
+    def submit_if_new(self, contracts: dict[str, Any]) -> tuple[str, str] | None:
+        """
+        Like submit(), but atomically no-ops (returns None) instead of upserting if
+        this task_id already has a row -- for automatic advancement
+        (Scheduler._advance), where a plain "check, then submit" from separate
+        threads could otherwise submit the same newly-unblocked task twice: two
+        sibling dependencies of the same downstream task can finish concurrently
+        under a multi-worker pool, and both would independently see it as
+        unblocked. The existence check and the insert happen under the same
+        `self.lock` acquisition specifically so nothing can interleave between
+        them. submit() itself is intentionally unchanged -- an explicit resubmit
+        of an already-known task_id (retrying a failed task) is legitimate there
+        and must keep upserting exactly as before.
+        """
+        task_id = contracts["task"]["task"]["id"]
+        run_id, timestamp = f"run-{uuid.uuid4().hex}", now()
+        with self.lock, self.connection:
+            if self.connection.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone():
+                return None
+            self.connection.execute(
+                "INSERT INTO tasks(id,status,contracts,created_at,updated_at) VALUES(?,?,?,?,?)",
+                (task_id, "queued", json.dumps(contracts), timestamp, timestamp),
+            )
+            self.connection.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?)", (run_id, task_id, "queued", None, None, timestamp, timestamp))
+            self._event(run_id, "run.queued", {"task_id": task_id})
+        return task_id, run_id
+
     def update_run(self, run_id: str, status: str, output_path: str | None = None, error: str | None = None):
         with self.lock, self.connection:
             row = self.connection.execute("SELECT task_id FROM runs WHERE id=?", (run_id,)).fetchone()
@@ -63,17 +93,20 @@ class Store:
         self.connection.execute("INSERT INTO events(run_id,sequence,type,payload,created_at) VALUES(?,?,?,?,?)", (run_id, sequence, event_type, json.dumps(payload), now()))
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
         return dict(row) if row else None
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         return dict(row) if row else None
 
     def get_latest_run_for_task(self, task_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            "SELECT * FROM runs WHERE task_id=? ORDER BY created_at DESC LIMIT 1", (task_id,)
-        ).fetchone()
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM runs WHERE task_id=? ORDER BY created_at DESC LIMIT 1", (task_id,)
+            ).fetchone()
         return dict(row) if row else None
 
     def record_attempt(self, task_id: str) -> int:
@@ -91,11 +124,13 @@ class Store:
             return attempts
 
     def get_attempt_count(self, task_id: str) -> int:
-        row = self.connection.execute("SELECT attempts FROM task_attempts WHERE task_id=?", (task_id,)).fetchone()
+        with self.lock:
+            row = self.connection.execute("SELECT attempts FROM task_attempts WHERE task_id=?", (task_id,)).fetchone()
         return row["attempts"] if row else 0
 
     def events(self, run_id: str) -> list[dict[str, Any]]:
-        rows = self.connection.execute("SELECT sequence,type,payload,created_at FROM events WHERE run_id=? ORDER BY sequence", (run_id,)).fetchall()
+        with self.lock:
+            rows = self.connection.execute("SELECT sequence,type,payload,created_at FROM events WHERE run_id=? ORDER BY sequence", (run_id,)).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
 
     def summary(self, run_id: str) -> dict[str, Any] | None:
@@ -121,7 +156,9 @@ class Store:
         return load_yaml(path) if path.is_file() else None
 
     def contracts(self, task_id: str) -> dict[str, Any]:
-        return json.loads(self.connection.execute("SELECT contracts FROM tasks WHERE id=?", (task_id,)).fetchone()[0])
+        with self.lock:
+            row = self.connection.execute("SELECT contracts FROM tasks WHERE id=?", (task_id,)).fetchone()
+        return json.loads(row[0])
 
     def save_onboarding_proposal(self, repository_id: str, proposal: dict[str, Any]) -> None:
         timestamp = now()
@@ -143,17 +180,19 @@ class Store:
         `repository analyze` that never got a matching `repository apply`). Ordered
         most-recently-touched first, so the most likely thing to resume comes first.
         """
-        rows = self.connection.execute(
-            "SELECT repository_id FROM onboarding_proposals "
-            "WHERE repository_id NOT IN (SELECT repository_id FROM onboarding_answers) "
-            "ORDER BY updated_at DESC"
-        ).fetchall()
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT repository_id FROM onboarding_proposals "
+                "WHERE repository_id NOT IN (SELECT repository_id FROM onboarding_answers) "
+                "ORDER BY updated_at DESC"
+            ).fetchall()
         return [row["repository_id"] for row in rows]
 
     def get_onboarding_proposal(self, repository_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            "SELECT * FROM onboarding_proposals WHERE repository_id=?", (repository_id,)
-        ).fetchone()
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM onboarding_proposals WHERE repository_id=?", (repository_id,)
+            ).fetchone()
         if not row:
             return None
         return {**dict(row), "proposal": json.loads(row["proposal"])}
@@ -172,9 +211,10 @@ class Store:
             )
 
     def get_onboarding_answers(self, repository_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            "SELECT * FROM onboarding_answers WHERE repository_id=?", (repository_id,)
-        ).fetchone()
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM onboarding_answers WHERE repository_id=?", (repository_id,)
+            ).fetchone()
         if not row:
             return None
         return {**dict(row), "answers": json.loads(row["answers"]), "result": json.loads(row["result"])}
@@ -198,9 +238,10 @@ class Store:
             )
 
     def get_pending_answers(self, repository_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute(
-            "SELECT * FROM onboarding_pending_answers WHERE repository_id=?", (repository_id,)
-        ).fetchone()
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT * FROM onboarding_pending_answers WHERE repository_id=?", (repository_id,)
+            ).fetchone()
         if not row:
             return None
         return {**dict(row), "answers": json.loads(row["answers"])}
@@ -220,7 +261,8 @@ class Store:
             )
 
     def get_plan_draft(self, initiative_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute("SELECT * FROM plan_drafts WHERE initiative_id=?", (initiative_id,)).fetchone()
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM plan_drafts WHERE initiative_id=?", (initiative_id,)).fetchone()
         if not row:
             return None
         return {
@@ -244,7 +286,8 @@ class Store:
             )
 
     def get_plan_pending_answers(self, initiative_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute("SELECT * FROM plan_pending_answers WHERE initiative_id=?", (initiative_id,)).fetchone()
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM plan_pending_answers WHERE initiative_id=?", (initiative_id,)).fetchone()
         if not row:
             return None
         return {**dict(row), "answers": json.loads(row["answers"])}
@@ -263,7 +306,8 @@ class Store:
             )
 
     def get_plan_result(self, initiative_id: str) -> dict[str, Any] | None:
-        row = self.connection.execute("SELECT * FROM plan_results WHERE initiative_id=?", (initiative_id,)).fetchone()
+        with self.lock:
+            row = self.connection.execute("SELECT * FROM plan_results WHERE initiative_id=?", (initiative_id,)).fetchone()
         if not row:
             return None
         return {**dict(row), "answers": json.loads(row["answers"]), "result": json.loads(row["result"])}

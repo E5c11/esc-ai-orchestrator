@@ -351,11 +351,60 @@ marked as such.
    automatically inside repo-a's own `execute_task` call, with no second
    explicit submission, confirmed via both `store.get_task` and the now-empty
    `task impact` result afterward. Suite: 136 -> 139 passing.
-8. **Bounded worker pool in `Scheduler`.** Extend from one worker thread to a small
-   configurable pool (default 5), plus a concurrent-writes test confirming `Store`'s
-   existing `threading.Lock` actually holds up under multiple workers (it's never been
-   exercised by more than one thread). Independent of (1)-(7); needed before (7) is
-   useful for genuinely-parallel unblocked tasks, but can be built any time.
+8. ~~**Bounded worker pool in `Scheduler`.**~~ Extend from one worker thread to a
+   small configurable pool (default 5), plus a concurrent-writes test confirming
+   `Store`'s existing `threading.Lock` actually holds up under multiple workers
+   (it's never been exercised by more than one thread). Independent of (1)-(7);
+   needed before (7) is useful for genuinely-parallel unblocked tasks, but can be
+   built any time. Done 2026-07-23 in `esc-ai-orchestrator`, no separate plan doc
+   needed. `Scheduler.__init__` now takes `workers: int = 5` and starts that many
+   daemon threads all running `_work`, all pulling from the same `queue.Queue`;
+   `close()` sends one sentinel per thread and joins them all.
+   **The concurrent-writes test the task explicitly called for immediately found a
+   real bug, not a hypothetical one** — confirming this couldn't have been
+   responsibly skipped: `Store`'s `threading.Lock` only ever wrapped *writes*
+   (`submit`/`update_run`/etc.); every read method (`get_task`, `get_run`,
+   `contracts`, `events`, and eight more) called `self.connection.execute(...)`
+   completely unprotected. Python's `sqlite3.Connection`/`Cursor` objects are not
+   safe for concurrent simultaneous use from multiple threads merely because
+   `check_same_thread=False` was passed — that flag only disables the same-thread
+   safety check, it doesn't add its own serialization. Under a real multi-worker
+   pool, concurrent unprotected reads racing against locked writes (or against
+   each other) corrupted the connection's internal state, surfacing as
+   `sqlite3.InterfaceError: bad parameter or other API misuse` roughly 1 run in 7
+   in a targeted repro script (`analyze_task_impact` calls from two workers'
+   `Scheduler._advance` racing on `Store.get_task`) — this wasn't only a task-8
+   risk either: `esc_orchestrator/api.py` already serves every HTTP request via
+   `ThreadingHTTPServer`, reading the same `Store` from a request-handling thread
+   pool that existed before this task. Fixed by changing `self.lock` from
+   `threading.Lock` to `threading.RLock` (several read methods call another
+   locked method of the same `Store` from the same thread, e.g. `output_document`
+   calling `get_run`, which a plain `Lock` would deadlock re-acquiring) and
+   wrapping every remaining unlocked `self.connection.execute(...)` call site —
+   all thirteen of them — in `with self.lock:`. `_event` stays intentionally
+   unlocked; it's private and only ever called from within a caller that already
+   holds the lock.
+   **A second real bug found the same way, one level up:** even with `Store`
+   fully locked, a stress script (100 iterations, a `threading.Barrier` forcing
+   two sibling dependencies to finish at genuinely the same moment) still
+   occasionally lost the downstream task entirely -- traced to
+   `Scheduler._advance` calling the non-atomic pattern "check `store.get_task`,
+   then `self.submit(...)`" for a newly-unblocked task: two sibling dependencies
+   of the same downstream task finishing concurrently could each independently
+   observe it as still-blocked-on-the-other, or both independently observe it as
+   now-unblocked and both submit it. Fixed with a new `Store.submit_if_new`
+   (check-existence-then-insert inside one `with self.lock:` acquisition, so
+   nothing can interleave between the two) that `Scheduler._advance` now uses
+   instead of a separate `get_task` check plus `submit`; `Store.submit` itself is
+   untouched, since an explicit human retry legitimately needs to keep upserting.
+   Tests: `tests/test_orchestrator.py` gained `test_submit_if_new_is_race_safe_
+   under_concurrent_workers` (20 threads racing to submit the same task_id;
+   exactly one wins), `test_worker_pool_processes_many_tasks_concurrently_
+   without_corruption` (20 distinct tasks through a 5-worker pool), and
+   `test_diamond_dependency_advancement_never_double_submits_shared_downstream_
+   task` (the barrier-forced two-sibling-dependency race, confirmed stable across
+   5 repeated full-suite runs after the fix, having failed intermittently before
+   it). Suite: 139 -> 142 passing.
 9. **90%-usage dispatch pause.** In (7)'s automatic-advancement path, hold newly-
    unblocked tasks rather than dispatching them once the active provider's usage is at
    or above 90% (already-running tasks are never interrupted). **Blocked on
@@ -365,8 +414,9 @@ marked as such.
    the pause once usage tracking is real. Do not stub a fake/hardcoded usage check to
    unblock this early — that would be worse than no check at all.
 
-Tasks 1, 2, 3, 4, 5, 6, and 7 are done (see above) — the whole headless
-dependency-graph-plus-verification loop this plan set out to build now actually
-runs itself. Only task 8 (bounded worker pool, independent, can be built any time)
-and task 9 (blocked on a different plan's `usage` tracking existing at all, don't
-pull it forward) remain.
+Tasks 1 through 8 are done (see above) — the whole headless dependency-graph-
+plus-verification loop this plan set out to build now actually runs itself, and
+does so correctly under real concurrency (multiple Store bugs found and fixed by
+task 8's own concurrent-writes test, not left as latent risk). Only task 9
+remains, blocked on a different plan's `usage` tracking existing at all — don't
+pull it forward.

@@ -71,11 +71,12 @@ def _write_checkpoint_candidate(
 
 
 class Scheduler:
-    def __init__(self, store: Store, runtime: Runtime, registry: Path):
+    def __init__(self, store: Store, runtime: Runtime, registry: Path, workers: int = 5):
         self.store, self.runtime, self.registry = store, runtime, registry
         self.queue: queue.Queue[tuple[str, str] | None] = queue.Queue()
-        self.thread = threading.Thread(target=self._work, daemon=True)
-        self.thread.start()
+        self.threads = [threading.Thread(target=self._work, daemon=True) for _ in range(workers)]
+        for thread in self.threads:
+            thread.start()
 
     def submit(self, contracts: dict[str, Any]) -> tuple[str, str]:
         task_id, run_id = self.store.submit(contracts)
@@ -138,6 +139,12 @@ class Scheduler:
         checkpoint review -- is left alone; depends_on isn't enforced by `execute_task`
         itself, so a task can legitimately have been run out of order already, and
         auto-advancement must never silently resubmit out from under that.
+
+        Uses `store.submit_if_new` rather than a separate "check, then submit" --
+        with a bounded worker pool (task 8), two sibling dependencies of the same
+        downstream task can finish concurrently on different workers, and both would
+        otherwise independently see it as newly unblocked and submit it twice.
+        `submit_if_new` makes the check-and-insert atomic, so only one of them wins.
         """
         impact = analyze_task_impact(self.store, self.registry, completed_task_id)
         if not impact["newly_unblocked"]:
@@ -145,11 +152,9 @@ class Scheduler:
         contracts = self.store.contracts(completed_task_id)
         for node in impact["newly_unblocked"]:
             repository_id, unblocked_task_id = node.split("/", 1)
-            if self.store.get_task(unblocked_task_id) is not None:
-                continue
             repository = resolve_route(self.registry, "repositories", repository_id)
             task_path = repository / ".esc-ai" / "workflows" / "active" / unblocked_task_id / "task.yaml"
-            self.submit({
+            submitted = self.store.submit_if_new({
                 "task": load_yaml(task_path),
                 "workspace": {
                     "schema_version": 1,
@@ -161,7 +166,11 @@ class Scheduler:
                 "adapter": contracts["adapter"],
                 "policy": contracts["policy"],
             })
+            if submitted is not None:
+                self.queue.put(submitted)
 
     def close(self):
-        self.queue.put(None)
-        self.thread.join(timeout=5)
+        for _ in self.threads:
+            self.queue.put(None)
+        for thread in self.threads:
+            thread.join(timeout=5)
