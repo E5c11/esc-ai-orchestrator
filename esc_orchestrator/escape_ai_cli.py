@@ -38,7 +38,7 @@ from esc_exec.registry import (
 from esc_exec.roadmap import load_project_roadmap, save_project_roadmap
 from esc_exec.yaml_io import load_yaml
 
-from esc_orchestrator.initiative import analyze_task_impact
+from esc_orchestrator.initiative import analyze_task_impact, find_ready_tasks
 from esc_orchestrator.runtime import ClaudeCodeRuntime, CodexRuntime, OpenCodeRuntime
 from esc_orchestrator.scaffold_wizards import render_wizard_suggestion
 from esc_orchestrator.scheduler import Scheduler
@@ -1723,6 +1723,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan_commands.add_parser("apply").add_argument("initiative_id")
     plan_commands.add_parser("status").add_argument("initiative_id")
+    plan_commands.add_parser(
+        "ready", help="List tasks in this initiative that are unblocked and never submitted",
+    ).add_argument("initiative_id")
 
     task = subcommands.add_parser("task", help="Execute a planned task and manage its checkpoints")
     task_commands = task.add_subparsers(dest="task_command", required=True)
@@ -1881,6 +1884,11 @@ def _dispatch_plan(args: argparse.Namespace, store: Store, registry: Path) -> in
             "has_result": result is not None,
             "process_metrics": planning_process_metrics(store, args.initiative_id),
         }))
+        return 0
+
+    if args.plan_command == "ready":
+        ready = find_ready_tasks(store, registry, args.initiative_id)
+        print(json.dumps(ready, indent=2))
         return 0
 
     return 1

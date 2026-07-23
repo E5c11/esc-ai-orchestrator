@@ -133,32 +133,70 @@ escape-ai provider auth <name> [--route subscription|api-key]
 route). Skip this if `escape-ai resume` (below) already shows work with no provider
 error.
 
-## Step 4 — run the first task; the rest advance themselves
+## Step 4 — run every currently-ready task, in parallel
 
-Single-repository plan:
+Single-repository plan — there's only ever one task, nothing to parallelize:
 
 ```
 escape-ai task run <repository-id> <initiative-id> --yes
 ```
 
-Multi-repository plan — run only the **first** repository in the `repositories` list
-from Step 2's request file:
+Multi-repository plan — find every task that's unblocked *right now* and has never
+been submitted:
 
 ```
-escape-ai task run <first-repository-id> <initiative-id>-<first-repository-id> --yes
+escape-ai plan ready <initiative-id>
 ```
 
-If it completes clean
-(the independently-executed verification gates actually pass, not just the agent's
-own claim — see `task-orchestration-and-verification-loop.md`), every task that was
-only blocked on it runs automatically, no further commands needed. Confirm with:
+This prints a JSON list of `"repository/task-id"` entries — every task whose
+`depends_on` is fully satisfied and that has no execution history yet. For an
+initiative with several independent tasks (not chained to each other at all), this
+can be more than one entry even before anything has run.
+
+**Known limitation, as of this writing:** Step 2's `plan apply` always synthesizes a
+straight chain across the declared `repositories` list order (each depends only on
+the one before it), never genuine branching, regardless of whether the actual work
+requires that ordering — so `plan ready` will usually return exactly one entry right
+after `plan apply`, even for tasks that don't really need to run in sequence. If you
+know two or more of the tasks Step 2 just wrote are genuinely independent, you can
+hand-edit their `task.yaml`'s `task.initiative.depends_on` list directly (remove an
+entry that isn't a real requirement) before running `plan ready` — `depends_on`
+entries are just `"repository/task-id"` strings, safe to edit by hand. Once
+multiple tasks are genuinely independent (whether by that edit or because a future
+`plan apply` stops always-chaining), everything below already handles them correctly
+in parallel — this limitation is about what Step 2 generates today, not what Step 4
+can execute.
+
+**Dispatch every entry in that list at once, using your own native parallel/subagent
+mechanism** (e.g. multiple tool calls in a single message, or your equivalent) — one
+subagent per ready task, each running:
+
+```
+escape-ai task run <repository-id> <task-id> --yes
+```
+
+for its own `"repository/task-id"` entry (split on the first `/`). Do not run these
+one at a time in a loop in the main session if you have a way to run them
+concurrently — that's the whole point of this step. It's safe: `escape-ai` itself
+guards against two processes racing to submit the same task twice, even across real
+separate OS processes, not just threads.
+
+You do not need to poll and re-dispatch after this wave finishes. Each dispatched
+task's own process keeps running until nothing more auto-advances from it — and
+because completion state is shared through the same on-disk store every process
+reads, a task blocked on outputs from *two* different parallel branches still gets
+picked up correctly, by whichever branch's process happens to finish last. Confirm
+the whole initiative is clear with:
 
 ```
 escape-ai resume --json
 ```
 
 which lists every active task across every registered repository with its latest run
-status and whether a checkpoint is pending review.
+status and whether a checkpoint is pending review. If anything still shows no run
+status at all once every dispatched subagent has returned, run `plan ready` again —
+this should be rare (it means something dispatched by a subagent is still catching
+up), not the normal case.
 
 ## When a run stops — two different reasons, two different responses
 
@@ -211,6 +249,7 @@ is for people who aren't the maintainer.
 | Draft a plan | `escape-ai plan draft <initiative-id> <request.json>` |
 | Submit plan answers | `escape-ai plan answer <initiative-id> <file>` |
 | Apply a plan | `escape-ai plan apply <initiative-id>` |
+| Find every currently-ready task | `escape-ai plan ready <initiative-id>` |
 | Connect a provider | `escape-ai provider auth <name>` |
 | Run a task | `escape-ai task run <repo-id> <task-id> --yes` |
 | See what's active/blocked | `escape-ai resume --json` |

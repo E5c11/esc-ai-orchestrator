@@ -5,7 +5,7 @@ import unittest
 from esc_exec.registry import add_route
 from esc_exec.yaml_io import write_yaml
 
-from esc_orchestrator.initiative import analyze_task_impact
+from esc_orchestrator.initiative import analyze_task_impact, find_ready_tasks
 from esc_orchestrator.store import Store
 
 
@@ -142,6 +142,86 @@ class TaskImpactAnalysisTests(unittest.TestCase):
         output = self.root / "impact.json"
         analyze_task_impact(self.store, self.registry, "task-a", output=output)
         self.assertTrue(output.is_file())
+
+
+class FindReadyTasksTests(unittest.TestCase):
+    """
+    Reuses TaskImpactAnalysisTests' fixture setup (its `setUp`, `_add_repository`,
+    `_declare_task`) -- find_ready_tasks and analyze_task_impact share the same
+    graph-discovery machinery and should be exercised through the same conventions.
+    """
+
+    def setUp(self):
+        self.temp = TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.registry = self.root / "registry.yaml"
+        self.repositories: dict[str, Path] = {}
+        self.store = Store(self.root / "db.sqlite")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _add_repository(self, repository_id: str) -> Path:
+        path = self.root / repository_id
+        path.mkdir()
+        add_route(self.registry, "repositories", repository_id, path)
+        self.repositories[repository_id] = path
+        return path
+
+    def _declare_task(self, task_id: str, repository_id: str, initiative: dict | None = None, complete: bool = False) -> None:
+        if repository_id not in self.repositories:
+            self._add_repository(repository_id)
+        contracts = _contracts(task_id, repository_id, initiative)
+        _, run_id = self.store.submit(contracts)
+        if complete:
+            self.store.update_run(run_id, "succeeded")
+        task_dir = self.repositories[repository_id] / ".esc-ai" / "workflows" / "active" / task_id
+        task_dir.mkdir(parents=True)
+        write_yaml(task_dir / "task.yaml", _task_document(task_id, repository_id, initiative))
+
+    def test_root_tasks_with_no_dependencies_are_ready(self):
+        self._add_repository("repo")
+        task_dir_a = self.repositories["repo"] / ".esc-ai" / "workflows" / "active" / "task-a"
+        task_dir_a.mkdir(parents=True)
+        write_yaml(task_dir_a / "task.yaml", _task_document("task-a", "repo", {"id": "feature-x"}))
+        task_dir_b = self.repositories["repo"] / ".esc-ai" / "workflows" / "active" / "task-b"
+        task_dir_b.mkdir(parents=True)
+        write_yaml(task_dir_b / "task.yaml", _task_document("task-b", "repo", {"id": "feature-x"}))
+        ready = find_ready_tasks(self.store, self.registry, "feature-x")
+        self.assertEqual(["repo/task-a", "repo/task-b"], ready)
+
+    def test_task_with_unsatisfied_dependency_not_ready(self):
+        self._add_repository("repo")
+        task_dir = self.repositories["repo"] / ".esc-ai" / "workflows" / "active" / "task-b"
+        task_dir.mkdir(parents=True)
+        write_yaml(task_dir / "task.yaml", _task_document(
+            "task-b", "repo", {"id": "feature-x", "depends_on": ["repo/task-a"]},
+        ))
+        ready = find_ready_tasks(self.store, self.registry, "feature-x")
+        self.assertEqual([], ready)
+
+    def test_already_submitted_task_not_reported_ready_again(self):
+        self._declare_task("task-a", "repo", {"id": "feature-x"})
+        ready = find_ready_tasks(self.store, self.registry, "feature-x")
+        self.assertEqual([], ready)
+
+    def test_dependent_becomes_ready_once_dependency_completes(self):
+        self._declare_task("task-a", "repo", {"id": "feature-x"}, complete=True)
+        task_dir = self.repositories["repo"] / ".esc-ai" / "workflows" / "active" / "task-b"
+        task_dir.mkdir(parents=True)
+        write_yaml(task_dir / "task.yaml", _task_document(
+            "task-b", "repo", {"id": "feature-x", "depends_on": ["repo/task-a"]},
+        ))
+        ready = find_ready_tasks(self.store, self.registry, "feature-x")
+        self.assertEqual(["repo/task-b"], ready)
+
+    def test_unrelated_initiative_not_reported(self):
+        self._add_repository("repo")
+        task_dir = self.repositories["repo"] / ".esc-ai" / "workflows" / "active" / "task-z"
+        task_dir.mkdir(parents=True)
+        write_yaml(task_dir / "task.yaml", _task_document("task-z", "repo", {"id": "other-initiative"}))
+        ready = find_ready_tasks(self.store, self.registry, "feature-x")
+        self.assertEqual([], ready)
 
 
 if __name__ == "__main__":

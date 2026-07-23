@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -371,6 +373,53 @@ class OrchestratorTests(unittest.TestCase):
                 "SELECT COUNT(*) AS n FROM runs WHERE task_id=?", ("task-1",)
             ).fetchone()["n"]
             self.assertEqual(1, row_count)
+
+    def test_submit_if_new_is_race_safe_across_processes(self):
+        """
+        Parallel task dispatch (plan/done/headless-backdoor-mode.md's follow-on):
+        dispatching several ready tasks via parallel subagents means separate OS
+        processes racing to submit_if_new, not just threads within one Scheduler.
+        The thread-level test above doesn't cover this -- Store's threading.RLock
+        only ever serializes *this process*. Confirmed as a real bug empirically
+        (a standalone repro script, 20 attempts x 8 real subprocesses): with the
+        plain `with self.lock, self.connection:` pattern, SQLite's default deferred
+        transaction lets a bare SELECT run lock-free, so two separate processes
+        could both see "no row" and race to INSERT -- sqlite3.IntegrityError on the
+        loser, not a clean None. Fixed with an explicit `BEGIN IMMEDIATE` inside
+        submit_if_new, which takes SQLite's write lock before the SELECT runs.
+        This spawns real subprocesses (not threads) specifically to exercise that
+        fix, not just re-check the already-covered thread-level path.
+        """
+        with TemporaryDirectory() as temp:
+            db_path = Path(temp) / "db.sqlite"
+            repository_root = Path(__file__).resolve().parent.parent
+            racer_script = Path(temp) / "racer.py"
+            racer_script.write_text(
+                "import sys\n"
+                f"sys.path.insert(0, {str(repository_root)!r})\n"
+                "from pathlib import Path\n"
+                "from esc_orchestrator.store import Store\n"
+                f"store = Store(Path({str(db_path)!r}))\n"
+                "result = store.submit_if_new({\n"
+                "    'task': {'schema_version': 1, 'task': {'id': 'shared-task', 'title': 't', 'objective': 'o', 'repository': 'repo', 'status': 'ready'}, 'scope': {'components': ['core']}, 'completion_conditions': ['done']},\n"
+                "    'workspace': {'schema_version': 1, 'workspace': {'id': 'w', 'kind': 'local', 'repository': 'repo', 'isolation': 'process'}},\n"
+                "    'adapter': {'schema_version': 1, 'adapter': {'id': 'a', 'kind': 'agent-runtime', 'provider': 'opencode', 'capabilities': ['sessions']}},\n"
+                "    'policy': {'schema_version': 1, 'policy': {'id': 'p', 'description': 'test'}, 'permissions': {'read': 'allow'}},\n"
+                "})\n"
+                "print('WON' if result is not None else 'LOST')\n"
+            )
+            for attempt in range(5):
+                processes = [
+                    subprocess.Popen(
+                        [sys.executable, str(racer_script)],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    )
+                    for _ in range(6)
+                ]
+                outputs = [process.communicate(timeout=30)[0] for process in processes]
+                wins = sum(1 for output in outputs if "WON" in output)
+                self.assertEqual(1, wins, f"attempt {attempt}: outputs={outputs}")
+                db_path.unlink()
 
     def test_worker_pool_processes_many_tasks_concurrently_without_corruption(self):
         with TemporaryDirectory() as temp:

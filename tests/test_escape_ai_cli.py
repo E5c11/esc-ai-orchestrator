@@ -1902,6 +1902,9 @@ class ExecutionAndResumptionTests(unittest.TestCase):
         automatic advancement submits repo-b's task itself -- no second execute_task
         call needed -- and it runs to completion within the same execute_task call
         (Scheduler.submit puts it on the same queue execute_task's queue.join() drains).
+        Also covers `plan ready` (parallel-dispatch discovery, headless-backdoor-
+        mode.md's follow-on): only repo-a is ready before anything runs (repo-b
+        depends on it), and nothing is ready once both have run.
         `task impact` on repo-a afterward correctly shows nothing left to unblock, since
         repo-b already ran; `store.get_task` confirms it actually happened rather than
         merely being reported as possible.
@@ -1946,6 +1949,12 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             code, out = run(["plan", "apply", "feature-cross"])
             self.assertEqual(0, code, out)
 
+            # Parallel dispatch (headless-backdoor-mode.md follow-on): before anything
+            # runs, only repo-a's task is ready -- repo-b's depends_on it.
+            code, out = run(["plan", "ready", "feature-cross"])
+            self.assertEqual(0, code, out)
+            self.assertEqual(["repo-a/feature-cross-repo-a"], json.loads(out))
+
             # Before repo-a's task has ever run, Store has no record of it yet.
             code, out = run(["task", "impact", "feature-cross-repo-a"])
             self.assertEqual(1, code, out)
@@ -1966,6 +1975,12 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             self.assertEqual("feature-cross", document["initiative_id"])
             self.assertEqual([], document["newly_unblocked"])
             self.assertEqual({}, document["still_blocked"])
+
+            # Both tasks have Store history now (one directly, one auto-advanced) --
+            # nothing left ready to dispatch.
+            code, out = run(["plan", "ready", "feature-cross"])
+            self.assertEqual(0, code, out)
+            self.assertEqual([], json.loads(out))
 
     def test_task_run_without_yes_only_previews(self):
         with TemporaryDirectory() as temp:

@@ -58,27 +58,55 @@ class Store:
         """
         Like submit(), but atomically no-ops (returns None) instead of upserting if
         this task_id already has a row -- for automatic advancement
-        (Scheduler._advance), where a plain "check, then submit" from separate
-        threads could otherwise submit the same newly-unblocked task twice: two
-        sibling dependencies of the same downstream task can finish concurrently
-        under a multi-worker pool, and both would independently see it as
-        unblocked. The existence check and the insert happen under the same
-        `self.lock` acquisition specifically so nothing can interleave between
-        them. submit() itself is intentionally unchanged -- an explicit resubmit
-        of an already-known task_id (retrying a failed task) is legitimate there
-        and must keep upserting exactly as before.
+        (Scheduler._advance) and for parallel dispatch of multiple ready tasks at
+        once, where a plain "check, then submit" could otherwise submit the same
+        task twice: two sibling dependencies of the same downstream task can finish
+        concurrently, and both would independently see it as unblocked.
+
+        `self.lock` alone is not sufficient here, and neither is the plain
+        `with self.lock, self.connection:` pattern every other write in this class
+        uses -- both only serialize *this process*. Confirmed empirically (a
+        20-attempt x 8-process stress script): with the default deferred/"BEGIN"
+        transaction Python's sqlite3 issues implicitly, a bare `SELECT` inside the
+        transaction takes no lock, so a second *process* can run the same SELECT,
+        also see no row, and race to INSERT -- `sqlite3.IntegrityError: UNIQUE
+        constraint failed` on the loser, not a clean `None`. An explicit
+        `BEGIN IMMEDIATE` takes SQLite's write lock at the start of the
+        transaction, before the SELECT runs, so a second process's transaction
+        blocks (via the default 5s busy timeout) until the first commits, and then
+        correctly sees the now-existing row. Re-ran the same stress script against
+        this fix: 160 races, exactly one winner every time, zero errors.
+        `self.lock` is kept alongside this for the separate, thread-level (not
+        cross-process) reason every other method needs it: Python's sqlite3
+        Connection/Cursor objects aren't safe for concurrent calls from multiple
+        threads of this same process either way.
+
+        submit() itself is intentionally unchanged -- an explicit resubmit of an
+        already-known task_id (retrying a failed task) is legitimate there and
+        must keep upserting exactly as before; it has no check-then-act gate to
+        race in the first place.
         """
         task_id = contracts["task"]["task"]["id"]
         run_id, timestamp = f"run-{uuid.uuid4().hex}", now()
-        with self.lock, self.connection:
-            if self.connection.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone():
-                return None
-            self.connection.execute(
-                "INSERT INTO tasks(id,status,contracts,created_at,updated_at) VALUES(?,?,?,?,?)",
-                (task_id, "queued", json.dumps(contracts), timestamp, timestamp),
-            )
-            self.connection.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?)", (run_id, task_id, "queued", None, None, timestamp, timestamp))
-            self._event(run_id, "run.queued", {"task_id": task_id})
+        with self.lock:
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                if self.connection.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone():
+                    self.connection.rollback()
+                    return None
+                self.connection.execute(
+                    "INSERT INTO tasks(id,status,contracts,created_at,updated_at) VALUES(?,?,?,?,?)",
+                    (task_id, "queued", json.dumps(contracts), timestamp, timestamp),
+                )
+                self.connection.execute(
+                    "INSERT INTO runs VALUES(?,?,?,?,?,?,?)",
+                    (run_id, task_id, "queued", None, None, timestamp, timestamp),
+                )
+                self._event(run_id, "run.queued", {"task_id": task_id})
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
         return task_id, run_id
 
     def update_run(self, run_id: str, status: str, output_path: str | None = None, error: str | None = None):

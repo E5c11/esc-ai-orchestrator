@@ -269,3 +269,11 @@ changes how the runbook needs to be written, not just where it lives.
    `<initiative-id>-<repository-id>`, which is only true for multi-repository
    plans; `generate_single_repository_workflow` uses the bare `<initiative-id>`
    for a single-repository plan.
+
+## Follow-on
+
+[`parallel-task-dispatch.md`](parallel-task-dispatch.md) (2026-07-23) extends
+`BACKDOOR.md`'s Step 4 to dispatch every currently-ready task at once via the AI
+session's own parallel/subagent mechanism, instead of one task at a time — and, in
+building that, found and fixed a real cross-process race in `Store.submit_if_new`
+that this plan's own single-task Step 4 never exercised.
