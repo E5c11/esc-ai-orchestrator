@@ -1,6 +1,6 @@
 # Headless Backdoor Mode — Plan
 
-**Status:** Active
+**Status:** Implemented
 **Date:** 2026-07-23
 **Objective:** Let the user drive escape-ai's multi-repo indexing, architecture-framework
 resolution, and task-orchestration/verification loop directly — as a trusted sole
@@ -17,7 +17,7 @@ in any repo, can be told to follow this mode directly.
 
 Distinct from both existing plans it sits next to:
 
-- [`cohesive-system-integration-and-onboarding.md`](cohesive-system-integration-and-onboarding.md)
+- [`cohesive-system-integration-and-onboarding.md`](../active/cohesive-system-integration-and-onboarding.md)
   is about the *interactive* CLI UX — guided questions, menus, confirmations. This plan
   is about removing that surface for a specific, narrower audience (the user, solo,
   across their own projects) while keeping everything underneath it.
@@ -179,10 +179,9 @@ changes how the runbook needs to be written, not just where it lives.
 
 ## Open questions
 
-1. **Exact runbook location/filename.** Leaning: a single markdown file at this
-   repo's root or under `docs/` (e.g. `BACKDOOR.md` or `docs/backdoor-mode.md`) —
-   root is more discoverable at a glance, `docs/` is more consistent with where
-   other reference material tends to live; not decided.
+1. **Resolved 2026-07-23.** `BACKDOOR.md` at this repo's root — root won on
+   discoverability, and no `docs/` directory existed here to be consistent with
+   anyway.
 2. **Whether the coverage gate needs a `--force`/override escape hatch** for a
    deliberate case where the user wants to proceed on a `stub` doc anyway (e.g.
    drafting the doc and the task that needs it in the same sitting). Leaning: no
@@ -223,19 +222,50 @@ changes how the runbook needs to be written, not just where it lives.
    referencing a `stub` doc stops the same way; an auto-advanced (not just
    directly-submitted) dependent task is gated too — proving the gate applies
    uniformly regardless of how a task entered the queue. Suite: 142 -> 146 passing.
-2. **Confirm and document the non-interactive multi-repo sequence end to end.**
+2. ~~**Confirm and document the non-interactive multi-repo sequence end to end.**~~
    A test (or a real run against a scratch multi-repo setup) driving
    `repository add/analyze/answer/apply` → `plan draft/answer/apply` →
    `task run --yes` for the first task only, confirming task 7's auto-advancement
-   completes the rest with zero further commands. Depends on nothing (task 1 changes
-   what a gated run does, not whether this sequence itself works) but should run
-   after (1) exists so the confirmation test also covers a clean-coverage path
-   through the gate.
-3. **Runbook document.** The single, self-contained, tool-agnostic file a session
+   completes the rest with zero further commands. Already satisfied, no new test
+   needed: `tests/test_escape_ai_cli.py::
+   test_task_impact_and_auto_advancement_for_cross_repository_task` (written while
+   building task 7 of `task-orchestration-and-verification-loop.md`) already does
+   exactly this — CLI-driven `repository add/analyze/answer/apply` and
+   `plan draft/answer/apply` for two real repositories, one explicit execution of
+   the first task, and confirmation the second runs itself. The literal `task run
+   --yes` CLI command isn't separately exercised: it resolves a real provider/
+   adapter with no fake-runtime injection point, so — matching every other
+   execution test in this codebase (`test_execute_retry_promote_and_resume_view`,
+   `test_verification_failure_produces_promotable_checkpoint`, etc.) — the test
+   calls `execute_task(..., runtime=<fake>)` directly, the exact function `task
+   run --yes` itself calls after resolving the provider. Re-verified passing as
+   part of this plan's task 1 work (146/146). No code changes; this task was
+   "confirm," not "build," and confirmation was already sitting in the test suite.
+3. ~~**Runbook document.**~~ The single, self-contained, tool-agnostic file a session
    reads and follows when pointed at it by path — the real version of section 2's
    command sequence, plus section 1's gate behavior and section 3's resolution loop,
    written for a fresh session with zero prior context, concretely enough that
    following it doesn't require re-deriving any of this plan's reasoning. This *is*
    the entry point — no separate registration/pointer step anywhere else needed.
    Depends on (1) and (2) existing so the runbook describes real, working behavior,
-   not aspiration.
+   not aspiration. Done 2026-07-23: `BACKDOOR.md` at the repo root. Covers: who
+   it's for; fixed facts (CLI binary name, `--db`/`--registry` defaults, that every
+   command it uses is already non-interactive); onboarding (repository
+   add/analyze/answer/apply, with example answers.json); planning (plan
+   draft/answer/apply, with example request.json/plan-answers.json, and the
+   single- vs. multi-repository task-ID naming difference — checked directly
+   against `apply_plan`'s code, since the two shapes genuinely differ:
+   `<initiative-id>` alone for single-repo, `<initiative-id>-<repository-id>` for
+   multi-repo); connecting a provider once; running the first task and letting
+   task 7's auto-advancement take the rest; and, critically, distinguishing an
+   ordinary blocked-task checkpoint from an architecture-coverage-gate checkpoint
+   by what the blocker text actually says, with the owner-fast-track resolution
+   loop (edit the doc directly, `status: active`, `python3 tools/index.py`,
+   re-run) spelled out concretely rather than described abstractly. Every command
+   and default in it was checked against the real CLI parser/dispatch code and
+   `esc-ai-architecture-framework`'s real `tools/index.py --help` output while
+   writing it, not assumed — including one real error caught this way: an
+   earlier draft assumed every plan's task ID was
+   `<initiative-id>-<repository-id>`, which is only true for multi-repository
+   plans; `generate_single_repository_workflow` uses the bare `<initiative-id>`
+   for a single-repository plan.
