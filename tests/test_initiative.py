@@ -80,6 +80,23 @@ class TaskImpactAnalysisTests(unittest.TestCase):
         self.assertEqual([], document["newly_unblocked"])
         self.assertEqual({}, document["still_blocked"])
 
+    def test_completed_task_counts_as_complete_even_if_its_own_task_yaml_is_undiscoverable(self):
+        """
+        Regression: completed_set used to be built purely from graph-discovered nodes,
+        so if the just-completed task's own task.yaml wasn't part of the disk scan for
+        any reason, its dependents would incorrectly stay "still blocked" on it forever
+        despite the caller explicitly telling us it's done. The premise of this
+        function -- "given a completed task" -- must hold regardless of disk state.
+        """
+        self._add_repository("repo")
+        _, run_id = self.store.submit(_contracts("task-a", "repo", {"id": "feature-x"}))
+        self.store.update_run(run_id, "succeeded")
+        # Deliberately no task.yaml written for task-a -- only task-b's exists.
+        self._declare_task("task-b", "repo", {"id": "feature-x", "depends_on": ["repo/task-a"]})
+        document = analyze_task_impact(self.store, self.registry, "task-a")
+        self.assertEqual(["repo/task-b"], document["newly_unblocked"])
+        self.assertEqual({}, document["still_blocked"])
+
     def test_direct_dependent_becomes_unblocked(self):
         self._declare_task("task-a", "repo", {"id": "feature-x"}, complete=True)
         self._declare_task("task-b", "repo", {"id": "feature-x", "depends_on": ["repo/task-a"]})

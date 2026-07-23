@@ -264,6 +264,80 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIsNone(store.get_run(run_id)["error"])
             scheduler.close()
 
+    def _write_task_yaml(self, repository_dir: Path, task_id: str, initiative: dict) -> None:
+        task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / task_id
+        task_dir.mkdir(parents=True)
+        write_yaml(task_dir / "task.yaml", {
+            "schema_version": 1,
+            "task": {
+                "id": task_id, "title": task_id, "objective": task_id, "repository": "repo", "status": "ready",
+                "initiative": initiative,
+            },
+            "scope": {"components": ["core"]},
+            "completion_conditions": ["done"],
+        })
+
+    def test_advances_newly_unblocked_task_automatically(self):
+        """
+        Task 7: task-b's task.yaml declares depends_on ["repo/task-1"] under the same
+        initiative -- once task-1 (task-b's dependency) completes clean, Scheduler must
+        submit task-b itself, with no second explicit submit() call from the test.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            self._write_task_yaml(repository_dir, "task-b", {"id": "feature-x", "depends_on": ["repo/task-1"]})
+
+            scheduler = Scheduler(store, FakeRuntime(root / "runs"), registry)
+            task_a_contracts = contracts()
+            task_a_contracts["task"]["task"]["initiative"] = {"id": "feature-x"}
+            scheduler.submit(task_a_contracts)
+            scheduler.queue.join()
+
+            self.assertEqual("succeeded", store.get_task("task-1")["status"])
+            self.assertEqual("succeeded", store.get_task("task-b")["status"])
+            scheduler.close()
+
+    def test_does_not_resubmit_a_task_with_existing_store_history(self):
+        """
+        task-b was already run once before task-1 (its declared dependency) ever
+        completed -- execute_task doesn't enforce depends_on, so this is legitimate,
+        out-of-order human action, not a bug. Task 7 must never silently resubmit a
+        task any prior history already exists for, even once it becomes "unblocked."
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            self._write_task_yaml(repository_dir, "task-b", {"id": "feature-x", "depends_on": ["repo/task-1"]})
+
+            scheduler = Scheduler(store, FailingRuntime(), registry)
+            task_b_contracts = contracts()
+            task_b_contracts["task"]["task"]["id"] = "task-b"
+            scheduler.submit(task_b_contracts)
+            scheduler.queue.join()
+            scheduler.close()
+            first_run = store.get_latest_run_for_task("task-b")
+            self.assertEqual("failed", first_run["status"])
+
+            scheduler = Scheduler(store, FakeRuntime(root / "runs"), registry)
+            task_a_contracts = contracts()
+            task_a_contracts["task"]["task"]["initiative"] = {"id": "feature-x"}
+            scheduler.submit(task_a_contracts)
+            scheduler.queue.join()
+
+            self.assertEqual("succeeded", store.get_task("task-1")["status"])
+            self.assertEqual(first_run["id"], store.get_latest_run_for_task("task-b")["id"])
+            self.assertEqual("failed", store.get_task("task-b")["status"])
+            scheduler.close()
+
     def test_verification_result_failed_marks_run_failed_not_agent_self_report(self):
         """
         The runtime itself never raised (the agent's own self-report was "done") --

@@ -1894,13 +1894,17 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             from esc_exec.model import ManifestState
             self.assertEqual(ManifestState.VALID, validate_contract("checkpoint", durable_path).state)
 
-    def test_task_impact_reports_newly_unblocked_cross_repository_task(self):
+    def test_task_impact_and_auto_advancement_for_cross_repository_task(self):
         """
-        Task 2: a multi-repository initiative's second task (repo-b) depends_on the
+        Task 2/7: a multi-repository initiative's second task (repo-b) depends_on the
         first (repo-a). Once repo-a's task actually completes (through real
-        Store/Scheduler execution, not a synthetic shortcut), `task impact` must
-        report repo-b's task as newly unblocked -- exercised through the real CLI,
-        not just at the analyze_task_impact unit level (see tests/test_initiative.py).
+        Store/Scheduler execution, not a synthetic shortcut), task 7's event-driven
+        automatic advancement submits repo-b's task itself -- no second execute_task
+        call needed -- and it runs to completion within the same execute_task call
+        (Scheduler.submit puts it on the same queue execute_task's queue.join() drains).
+        `task impact` on repo-a afterward correctly shows nothing left to unblock, since
+        repo-b already ran; `store.get_task` confirms it actually happened rather than
+        merely being reported as possible.
         """
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1953,11 +1957,14 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             )
             self.assertEqual("succeeded", result["status"])
 
+            # repo-b's task was never explicitly submitted -- task 7 auto-advanced it.
+            self.assertEqual("succeeded", store.get_task("feature-cross-repo-b")["status"])
+
             code, out = run(["task", "impact", "feature-cross-repo-a"])
             self.assertEqual(0, code, out)
             document = json.loads(out)
             self.assertEqual("feature-cross", document["initiative_id"])
-            self.assertEqual(["repo-b/feature-cross-repo-b"], document["newly_unblocked"])
+            self.assertEqual([], document["newly_unblocked"])
             self.assertEqual({}, document["still_blocked"])
 
     def test_task_run_without_yes_only_previews(self):

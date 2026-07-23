@@ -6,10 +6,11 @@ import threading
 from pathlib import Path
 from typing import Protocol, Any
 
+from esc_orchestrator.initiative import analyze_task_impact
 from esc_orchestrator.store import Store
 from esc_exec.checkpoints import checkpoint_document
 from esc_exec.registry import resolve_route
-from esc_exec.yaml_io import write_yaml
+from esc_exec.yaml_io import load_yaml, write_yaml
 
 
 class Runtime(Protocol):
@@ -98,6 +99,12 @@ class Scheduler:
                     )
                 else:
                     self.store.update_run(run_id, "succeeded", str(output))
+                    # Best-effort: a bug in advancement must never retroactively turn
+                    # this already-recorded success into a failure.
+                    try:
+                        self._advance(task_id)
+                    except Exception:
+                        pass
             except Exception as exc:
                 error = str(exc)[:1000]
                 output_path = None
@@ -112,6 +119,48 @@ class Scheduler:
                 self.store.update_run(run_id, "failed", output_path=output_path, error=error)
             finally:
                 self.queue.task_done()
+
+    def _advance(self, completed_task_id: str) -> None:
+        """
+        Event-driven automatic advancement (task 7 of
+        task-orchestration-and-verification-loop.md): once a run is independently
+        verified clean, check whether that unblocks any other declared task in the
+        same initiative (task 2's analyze_task_impact) and, if so, submit it.
+
+        Reuses the just-completed task's own `adapter`/`policy` contracts verbatim --
+        this Scheduler was built with exactly one `runtime`, so those two sub-dicts are
+        already proven compatible with it by the fact that the completed task just
+        ran through it successfully. Per-adapter dispatch across multiple runtimes is
+        deferred to native-cli-provider-adapters.md, not this task.
+
+        Only a task with no Store history at all is auto-submitted. One a human
+        already touched -- running, queued, or previously failed and awaiting
+        checkpoint review -- is left alone; depends_on isn't enforced by `execute_task`
+        itself, so a task can legitimately have been run out of order already, and
+        auto-advancement must never silently resubmit out from under that.
+        """
+        impact = analyze_task_impact(self.store, self.registry, completed_task_id)
+        if not impact["newly_unblocked"]:
+            return
+        contracts = self.store.contracts(completed_task_id)
+        for node in impact["newly_unblocked"]:
+            repository_id, unblocked_task_id = node.split("/", 1)
+            if self.store.get_task(unblocked_task_id) is not None:
+                continue
+            repository = resolve_route(self.registry, "repositories", repository_id)
+            task_path = repository / ".esc-ai" / "workflows" / "active" / unblocked_task_id / "task.yaml"
+            self.submit({
+                "task": load_yaml(task_path),
+                "workspace": {
+                    "schema_version": 1,
+                    "workspace": {
+                        "id": f"workspace-{repository_id}-default", "kind": "local",
+                        "repository": repository_id, "isolation": "process",
+                    },
+                },
+                "adapter": contracts["adapter"],
+                "policy": contracts["policy"],
+            })
 
     def close(self):
         self.queue.put(None)

@@ -312,9 +312,45 @@ marked as such.
    `checkpoint_candidate`/`promote_checkpoint`/`active_work`, mirroring the existing
    uncaught-exception version of that same test
    (`test_execute_retry_promote_and_resume_view`). Full suite: 126 -> 127 passing.
-7. **Event-driven automatic advancement.** Hook "check (2) for newly-unblocked tasks and
-   submit them" directly into the same place `update_run` already records a verified
-   run's final status. Depends on (2) and (5).
+7. ~~**Event-driven automatic advancement.**~~ Hook "check (2) for newly-unblocked
+   tasks and submit them" directly into the same place `update_run` already records
+   a verified run's final status. Depends on (2) and (5). Done 2026-07-23 in
+   `esc-ai-orchestrator`, no separate plan doc needed: `Scheduler._advance` (new,
+   `scheduler.py`), called from `_work` right after `update_run(run_id,
+   "succeeded", ...)` — never from the `"failed"` branches, verification-failed or
+   uncaught-exception alike, matching the design's "only verified-clean advances"
+   rule — calls `analyze_task_impact(store, registry, task_id)` and, for each
+   `newly_unblocked` entry, submits it via the existing `self.submit(...)`
+   (feeding back into the same queue the same worker thread drains, so a chain of
+   unblocked tasks runs out one at a time without any new concurrency). Reuses the
+   just-completed task's own `adapter`/`policy` contracts verbatim rather than
+   resolving a fresh provider — this Scheduler has exactly one `runtime`, so
+   those two sub-dicts are already proven compatible with it; per-adapter
+   dispatch across multiple runtimes stays deferred to
+   `native-cli-provider-adapters.md`, unaffected by this task. A newly-unblocked
+   task with **any** existing `Store` row at all (running, queued, or previously
+   failed and awaiting checkpoint review) is skipped, never silently resubmitted
+   — `execute_task` doesn't enforce `depends_on`, so a task can legitimately have
+   already been run out of order by a human, and auto-advancement must not step
+   on that. A bug inside `_advance` is caught and swallowed at its call site so
+   it can never retroactively flip an already-recorded success back to a
+   failure. **Real bug found and fixed in task 2's `analyze_task_impact` along
+   the way:** `completed_set` was built purely from graph-discovered nodes, so a
+   completed task whose own `task.yaml` wasn't part of the disk scan (e.g. never
+   written to disk in a test double, or any future case where a completed task's
+   directory stops being discoverable) would leave its dependents incorrectly
+   "still blocked" on it forever, contradicting the very premise of "given a
+   completed task." Fixed by unioning `completed_node` into `completed_set`
+   unconditionally — the caller telling us a task is complete is authoritative,
+   not contingent on a coincidental disk-scan artifact. Tests:
+   `tests/test_initiative.py` gained a regression test for that fix;
+   `tests/test_orchestrator.py` gained two `Scheduler`-level tests (auto-submits
+   a newly-unblocked task; does not resubmit one with existing Store history);
+   `tests/test_escape_ai_cli.py`'s cross-repository `task impact` test was
+   updated to assert the real end-to-end behavior — repo-b's task now runs
+   automatically inside repo-a's own `execute_task` call, with no second
+   explicit submission, confirmed via both `store.get_task` and the now-empty
+   `task impact` result afterward. Suite: 136 -> 139 passing.
 8. **Bounded worker pool in `Scheduler`.** Extend from one worker thread to a small
    configurable pool (default 5), plus a concurrent-writes test confirming `Store`'s
    existing `threading.Lock` actually holds up under multiple workers (it's never been
@@ -329,7 +365,8 @@ marked as such.
    the pause once usage tracking is real. Do not stub a fake/hardcoded usage check to
    unblock this early — that would be worse than no check at all.
 
-Tasks 1, 2, 3, 4, 5, and 6 are done (see above). Task 8 has everything it needs
-designed and can be built any time. Task 7 is designed and now fully unblocked —
-1, 2, and 5, everything it depended on, are all done. Task 9 is real but explicitly
-sequenced after a *different* plan's work — don't pull it forward.
+Tasks 1, 2, 3, 4, 5, 6, and 7 are done (see above) — the whole headless
+dependency-graph-plus-verification loop this plan set out to build now actually
+runs itself. Only task 8 (bounded worker pool, independent, can be built any time)
+and task 9 (blocked on a different plan's `usage` tracking existing at all, don't
+pull it forward) remain.

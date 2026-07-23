@@ -82,7 +82,12 @@ def analyze_task_impact(
             task = store.get_task(task_id)
             return task is not None and task["status"] == "succeeded"
 
-        completed_set = {node for node in graph if is_complete(node)}
+        # completed_node is complete by definition -- the caller is telling us so --
+        # regardless of whether its own task.yaml happens to be part of the disk scan
+        # above (e.g. a root task with no depends_on of its own is still a real node
+        # other tasks depend on; nothing about this function's contract should hinge
+        # on that file still being discoverable at analysis time).
+        completed_set = {node for node in graph if is_complete(node)} | {completed_node}
         newly_unblocked: list[str] = []
         still_blocked: dict[str, list[str]] = {}
         for node, depends_on in sorted(graph.items()):
