@@ -11,7 +11,7 @@ from esc_exec.indexing import generate_indexes
 from esc_exec.manifests import component_manifest_path, component_manifest_relative_path, repository_manifest_path
 from esc_exec.registry import add_route
 from esc_exec.task_context import generate_gradle_verification_profile
-from esc_exec.yaml_io import write_yaml
+from esc_exec.yaml_io import load_yaml, write_yaml
 from esc_orchestrator.api import server
 from esc_orchestrator.runtime import _AdapterRuntime
 from esc_orchestrator.scheduler import Scheduler
@@ -264,7 +264,9 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIsNone(store.get_run(run_id)["error"])
             scheduler.close()
 
-    def _write_task_yaml(self, repository_dir: Path, task_id: str, initiative: dict) -> None:
+    def _write_task_yaml(
+        self, repository_dir: Path, task_id: str, initiative: dict, components: list[str] | None = None,
+    ) -> None:
         task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / task_id
         task_dir.mkdir(parents=True)
         write_yaml(task_dir / "task.yaml", {
@@ -273,7 +275,7 @@ class OrchestratorTests(unittest.TestCase):
                 "id": task_id, "title": task_id, "objective": task_id, "repository": "repo", "status": "ready",
                 "initiative": initiative,
             },
-            "scope": {"components": ["core"]},
+            "scope": {"components": components or ["core"]},
             "completion_conditions": ["done"],
         })
 
@@ -563,6 +565,245 @@ class OrchestratorTests(unittest.TestCase):
             # and stops the plan there. The point of this test is that escape-ai's
             # own code ran the command at all, not that it happened to pass.
             self.assertEqual("failed", result["status"])
+
+    def _register_architecture_framework(self, root: Path, registry: Path, documents: list[dict]) -> None:
+        framework_root = root / "architecture-framework"
+        framework_root.mkdir()
+        (framework_root / "index.json").write_text(
+            json.dumps({"generated": "2026-01-01T00:00:00Z", "count": len(documents), "documents": documents}),
+            encoding="utf-8",
+        )
+        add_route(registry, "frameworks", "esc-ai-architecture-framework", framework_root)
+
+    def _repository_with_component(
+        self, repository_dir: Path, component_id: str, profile_ids: list[str] | None = None,
+        passing_verification: bool = False,
+    ) -> None:
+        (repository_dir / component_id).mkdir(parents=True, exist_ok=True)
+        manifest_path = repository_manifest_path(repository_dir)
+        existing = {"components": []}
+        if manifest_path.is_file():
+            existing = load_yaml(manifest_path)
+        existing.setdefault("schema_version", 1)
+        existing.setdefault("repository", {"id": "repo", "type": "gradle-multi-project", "purpose": "test"})
+        existing["components"] = [
+            entry for entry in existing["components"] if entry["id"] != component_id
+        ] + [{"id": component_id, "manifest": component_manifest_relative_path(component_id)}]
+        write_yaml(manifest_path, existing)
+        manifest = {
+            "schema_version": 1,
+            "component": {
+                "id": component_id, "type": "gradle-module", "path": component_id, "purpose": f"Owns {component_id}",
+            },
+            "build": {"system": "gradle", "project": f":{component_id}"},
+            "paths": {"source": "src/main", "tests": "src/test"},
+        }
+        if profile_ids:
+            manifest["architecture"] = {"profile_ids": profile_ids}
+        if passing_verification:
+            # A real, always-exit-0 command (`true`) instead of
+            # generate_gradle_verification_profile's `./gradlew`, which doesn't
+            # exist in this sandbox and would fail regardless of the coverage gate
+            # -- this component needs to genuinely succeed end to end.
+            manifest["paths"]["verification_profile"] = "esc-verification-profile.yaml"
+            write_yaml(component_manifest_path(repository_dir, component_id).parent / "esc-verification-profile.yaml", {
+                "schema_version": 1,
+                "profile": {"id": f"{component_id}-verification", "component": component_id},
+                "gates": {
+                    "focused": [], "component": [], "impact": [],
+                    "final": [{"id": "smoke", "command": ["true"]}],
+                },
+            })
+        write_yaml(component_manifest_path(repository_dir, component_id), manifest)
+        generate_indexes(repository_dir)
+        generate_dependency_graph(repository_dir)
+
+    def test_coverage_gate_allows_clean_architecture_coverage(self):
+        """
+        Task 1 of plan/active/headless-backdoor-mode.md: a component whose declared
+        architecture.profile_ids all resolve to a real, `active` document must proceed
+        normally -- the gate only blocks incomplete coverage, never complete coverage.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            self._repository_with_component(repository_dir, "content", profile_ids=["ORCH-BE-FEAT"])
+            generate_gradle_verification_profile(repository_dir, "content")
+            generate_indexes(repository_dir)
+            generate_dependency_graph(repository_dir)
+            add_route(registry, "repositories", "repo", repository_dir)
+            self._register_architecture_framework(root, registry, [
+                {"id": "ORCH-BE-FEAT", "path": "feature-orchestrators/backend/feature.md",
+                 "layer": "feature-orchestrators", "requires": []},
+            ])
+
+            class RecordingAdapter:
+                def __init__(self):
+                    self.called = False
+
+                def execute(self, task_path, workspace_path, adapter_path, policy_path):
+                    self.called = True
+                    run_dir = repository_dir / ".esc-ai" / "runs" / "run-clean"
+                    run_dir.mkdir(parents=True)
+                    return run_dir
+
+            runtime = _AdapterRuntime()
+            adapter = RecordingAdapter()
+            runtime.adapter = adapter
+            runtime.registry = registry
+            scheduler = Scheduler(store, runtime, registry)
+            task_contracts = contracts()
+            task_contracts["task"]["scope"] = {"components": ["content"]}
+            task_id, run_id = scheduler.submit(task_contracts)
+            scheduler.queue.join()
+
+            self.assertTrue(adapter.called)
+            scheduler.close()
+
+    def test_coverage_gate_blocks_missing_architecture_doc(self):
+        """
+        A component declaring a profile_id with no matching document at all must
+        stop the run before the adapter is ever invoked, and checkpoint with a
+        blocker naming the missing doc.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            self._repository_with_component(repository_dir, "content", profile_ids=["ORCH-BE-FEAT"])
+            add_route(registry, "repositories", "repo", repository_dir)
+            self._register_architecture_framework(root, registry, [])
+
+            class RecordingAdapter:
+                def __init__(self):
+                    self.called = False
+
+                def execute(self, task_path, workspace_path, adapter_path, policy_path):
+                    self.called = True
+                    run_dir = repository_dir / ".esc-ai" / "runs" / "run-should-not-happen"
+                    run_dir.mkdir(parents=True)
+                    return run_dir
+
+            runtime = _AdapterRuntime()
+            adapter = RecordingAdapter()
+            runtime.adapter = adapter
+            runtime.registry = registry
+            scheduler = Scheduler(store, runtime, registry)
+            task_contracts = contracts()
+            task_contracts["task"]["scope"] = {"components": ["content"]}
+            task_id, run_id = scheduler.submit(task_contracts)
+            scheduler.queue.join()
+
+            self.assertFalse(adapter.called)
+            run = store.get_run(run_id)
+            self.assertEqual("failed", run["status"])
+            checkpoint = store.output_yaml(run_id, "checkpoint.yaml")
+            self.assertEqual("blocked", checkpoint["checkpoint"]["status"])
+            self.assertEqual(1, len(checkpoint["progress"]["blockers"]))
+            self.assertIn("ORCH-BE-FEAT", checkpoint["progress"]["blockers"][0])
+            self.assertIn("does not exist", checkpoint["progress"]["blockers"][0])
+            scheduler.close()
+
+    def test_coverage_gate_blocks_stub_architecture_doc(self):
+        """
+        A component declaring a profile_id that resolves but is still `status: stub`
+        (not yet promoted `active`) must stop the run the same way a missing doc
+        does -- `stub` means "not yet selectable," not "good enough."
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            self._repository_with_component(repository_dir, "content", profile_ids=["ORCH-BE-FEAT"])
+            add_route(registry, "repositories", "repo", repository_dir)
+            self._register_architecture_framework(root, registry, [
+                {"id": "ORCH-BE-FEAT", "path": "feature-orchestrators/backend/feature.md",
+                 "layer": "feature-orchestrators", "requires": [], "status": "stub"},
+            ])
+
+            class RecordingAdapter:
+                def __init__(self):
+                    self.called = False
+
+                def execute(self, task_path, workspace_path, adapter_path, policy_path):
+                    self.called = True
+                    run_dir = repository_dir / ".esc-ai" / "runs" / "run-should-not-happen"
+                    run_dir.mkdir(parents=True)
+                    return run_dir
+
+            runtime = _AdapterRuntime()
+            adapter = RecordingAdapter()
+            runtime.adapter = adapter
+            runtime.registry = registry
+            scheduler = Scheduler(store, runtime, registry)
+            task_contracts = contracts()
+            task_contracts["task"]["scope"] = {"components": ["content"]}
+            task_id, run_id = scheduler.submit(task_contracts)
+            scheduler.queue.join()
+
+            self.assertFalse(adapter.called)
+            run = store.get_run(run_id)
+            self.assertEqual("failed", run["status"])
+            checkpoint = store.output_yaml(run_id, "checkpoint.yaml")
+            self.assertEqual(1, len(checkpoint["progress"]["blockers"]))
+            self.assertIn("ORCH-BE-FEAT", checkpoint["progress"]["blockers"][0])
+            self.assertIn("stub", checkpoint["progress"]["blockers"][0])
+            scheduler.close()
+
+    def test_coverage_gate_also_applies_to_auto_advanced_tasks(self):
+        """
+        The gate lives in _AdapterRuntime.execute, which every task goes through
+        regardless of how it was submitted -- an auto-advanced dependent (task 7)
+        must be gated exactly like a directly-submitted task, not just the first,
+        human/script-submitted task in an initiative.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            self._repository_with_component(repository_dir, "content", passing_verification=True)
+            self._repository_with_component(repository_dir, "api", profile_ids=["ORCH-BE-FEAT"])
+            add_route(registry, "repositories", "repo", repository_dir)
+            self._register_architecture_framework(root, registry, [])
+            self._write_task_yaml(
+                repository_dir, "task-b", {"id": "feature-x", "depends_on": ["repo/task-1"]}, components=["api"],
+            )
+
+            class RecordingAdapter:
+                def __init__(self):
+                    self.calls = []
+
+                def execute(self, task_path, workspace_path, adapter_path, policy_path):
+                    task_id = load_yaml(task_path)["task"]["id"]
+                    self.calls.append(task_id)
+                    run_dir = repository_dir / ".esc-ai" / "runs" / f"run-{task_id}"
+                    run_dir.mkdir(parents=True)
+                    return run_dir
+
+            runtime = _AdapterRuntime()
+            adapter = RecordingAdapter()
+            runtime.adapter = adapter
+            runtime.registry = registry
+            scheduler = Scheduler(store, runtime, registry)
+            task_contracts = contracts()
+            task_contracts["task"]["scope"] = {"components": ["content"]}
+            task_contracts["task"]["task"]["initiative"] = {"id": "feature-x"}
+            scheduler.submit(task_contracts)
+            scheduler.queue.join()
+
+            # task-1 (clean, no architecture.profile_ids) ran; task-b (auto-advanced,
+            # missing doc) never reached the adapter at all.
+            self.assertEqual(["task-1"], adapter.calls)
+            self.assertEqual("succeeded", store.get_task("task-1")["status"])
+            self.assertEqual("failed", store.get_task("task-b")["status"])
+            checkpoint = store.output_yaml(store.get_latest_run_for_task("task-b")["id"], "checkpoint.yaml")
+            self.assertIn("ORCH-BE-FEAT", checkpoint["progress"]["blockers"][0])
+            scheduler.close()
 
     def test_http_submission_and_observation(self):
         with TemporaryDirectory() as temp:

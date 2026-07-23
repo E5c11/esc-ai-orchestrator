@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Protocol, Any
 
 from esc_orchestrator.initiative import analyze_task_impact
+from esc_orchestrator.runtime import ArchitectureCoverageError
 from esc_orchestrator.store import Store
 from esc_exec.checkpoints import checkpoint_document
 from esc_exec.registry import resolve_route
@@ -108,12 +109,16 @@ class Scheduler:
                         pass
             except Exception as exc:
                 error = str(exc)[:1000]
+                # ArchitectureCoverageError (headless-backdoor-mode.md task 1) carries
+                # one blocker per incomplete doc; every other exception still gets the
+                # single opaque message, exactly as before.
+                blockers = exc.blockers if isinstance(exc, ArchitectureCoverageError) else [error]
                 output_path = None
                 try:
                     task = self.store.contracts(task_id)["task"]
                     repository = resolve_route(self.registry, "repositories", task["task"]["repository"])
                     candidate_dir = repository / ".esc-ai" / "runs" / run_id
-                    _write_checkpoint_candidate(self.store, task_id, run_id, candidate_dir, [error])
+                    _write_checkpoint_candidate(self.store, task_id, run_id, candidate_dir, blockers)
                     output_path = str(candidate_dir)
                 except Exception:
                     pass

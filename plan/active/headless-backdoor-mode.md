@@ -200,14 +200,29 @@ changes how the runbook needs to be written, not just where it lives.
 
 ## Tasks
 
-1. **Architecture-coverage hard stop.** `_AdapterRuntime.execute` calls
+1. ~~**Architecture-coverage hard stop.**~~ `_AdapterRuntime.execute` calls
    `build_task_context` before dispatching the adapter; on any in-scope
    `missing`/`stubs`, writes a checkpoint candidate via `_write_checkpoint_candidate`
-   and marks the run `"failed"` without ever invoking the adapter. Tests: a task
-   whose component cleanly resolves proceeds normally; a task referencing a missing
-   doc ID stops with a checkpoint naming it; a task referencing a `stub` doc stops
-   the same way; an auto-advanced (not just directly-submitted) task is gated too.
-   No dependencies.
+   and marks the run `"failed"` without ever invoking the adapter. No dependencies.
+   Done 2026-07-23 in `esc-ai-orchestrator`. Implemented essentially as designed,
+   with one simplification found while building it: rather than a parallel
+   file-based signal (a "coverage-result.json" mirroring how
+   `verification-result.json` works), `_AdapterRuntime.execute` just raises a new
+   `ArchitectureCoverageError(blockers: list[str])`, and `Scheduler._work`'s
+   existing exception-handling branch — already the generic "uncaught exception ->
+   checkpoint" path — checks `isinstance(exc, ArchitectureCoverageError)` to pass
+   its full `blockers` list to `_write_checkpoint_candidate` instead of the usual
+   single opaque `[str(exc)]`. Simpler than a new file format, and still exactly
+   "a new trigger for an existing path" per this plan's own framing — the
+   *exception* path specifically, not the *verification-result* path the original
+   design section leaned on, since coverage is checked before any adapter/gate
+   execution exists to produce a result document at all. Tests
+   (`tests/test_orchestrator.py`): a component with clean/no coverage proceeds
+   (adapter invoked); a component referencing a missing doc ID stops before the
+   adapter is ever invoked, with a checkpoint blocker naming it; a component
+   referencing a `stub` doc stops the same way; an auto-advanced (not just
+   directly-submitted) dependent task is gated too — proving the gate applies
+   uniformly regardless of how a task entered the queue. Suite: 142 -> 146 passing.
 2. **Confirm and document the non-interactive multi-repo sequence end to end.**
    A test (or a real run against a scratch multi-repo setup) driving
    `repository add/analyze/answer/apply` → `plan draft/answer/apply` →
