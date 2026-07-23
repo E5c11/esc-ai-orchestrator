@@ -30,14 +30,43 @@ def _verification_result(output: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _verification_failure_summary(result: dict[str, Any]) -> str:
-    failures = [
+def _verification_failures(result: dict[str, Any]) -> list[str]:
+    return [
         f"{gate['id']}.{check['id']} ({check['status']}, exit_code={check['exit_code']})"
         for gate in result["gates"]
         for check in gate["checks"]
         if check["status"] in {"failed", "error"}
     ]
+
+
+def _verification_failure_summary(failures: list[str]) -> str:
     return "verification failed: " + ", ".join(failures)
+
+
+def _write_checkpoint_candidate(
+    store: Store, task_id: str, run_id: str, candidate_dir: Path, blockers: list[str],
+) -> None:
+    """
+    Best-effort transient checkpoint candidate at `candidate_dir/checkpoint.yaml`, for a
+    human to review and promote later (see `promote_checkpoint`) -- shared by both
+    triggers into this path: an uncaught exception, and (task 6) a run whose adapter
+    reported done but whose independently-verified result came back not-clean. Never
+    raises itself, so a bug here can't prevent the caller from still recording the run's
+    real status/error.
+    """
+    try:
+        task = store.contracts(task_id)["task"]
+        document = checkpoint_document(
+            task,
+            run_id=run_id,
+            status="blocked",
+            remaining=["Resolve the recorded blocker and resume the task."],
+            blockers=blockers,
+            last_event_sequence=len(store.events(run_id)) - 1,
+        )
+        write_yaml(candidate_dir / "checkpoint.yaml", document)
+    except Exception:
+        pass
 
 
 class Scheduler:
@@ -62,8 +91,10 @@ class Scheduler:
                 output = self.runtime.execute(self.store.contracts(task_id))
                 result = _verification_result(output)
                 if result is not None and result["status"] != "passed":
+                    failures = _verification_failures(result)
+                    _write_checkpoint_candidate(self.store, task_id, run_id, output, failures)
                     self.store.update_run(
-                        run_id, "failed", str(output), _verification_failure_summary(result)
+                        run_id, "failed", str(output), _verification_failure_summary(failures)
                     )
                 else:
                     self.store.update_run(run_id, "succeeded", str(output))
@@ -74,15 +105,7 @@ class Scheduler:
                     task = self.store.contracts(task_id)["task"]
                     repository = resolve_route(self.registry, "repositories", task["task"]["repository"])
                     candidate_dir = repository / ".esc-ai" / "runs" / run_id
-                    document = checkpoint_document(
-                        self.store.contracts(task_id)["task"],
-                        run_id=run_id,
-                        status="blocked",
-                        remaining=["Resolve the recorded blocker and resume the task."],
-                        blockers=[error],
-                        last_event_sequence=len(self.store.events(run_id)) - 1,
-                    )
-                    write_yaml(candidate_dir / "checkpoint.yaml", document)
+                    _write_checkpoint_candidate(self.store, task_id, run_id, candidate_dir, [error])
                     output_path = str(candidate_dir)
                 except Exception:
                     pass

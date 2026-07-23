@@ -1709,6 +1709,40 @@ class _FakeSucceedingRuntime:
         return path
 
 
+class _FakeVerificationFailingRuntime:
+    """Never raises -- the adapter itself reports done -- but writes a
+    verification-result.json whose independently-executed gates came back
+    not-clean, exercising task 6's checkpoint trigger end to end through the CLI."""
+
+    def __init__(self, output_root: Path):
+        self.output_root = output_root
+
+    def execute(self, contracts):
+        path = self.output_root / f"{contracts['task']['task']['id']}-verify-fail-run"
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "verification-result.json").write_text(json.dumps({
+            "schema_version": 1,
+            "task_id": contracts["task"]["task"]["id"],
+            "generated_at": "2026-07-23T00:00:00Z",
+            "status": "failed",
+            "gates": [{
+                "id": "final",
+                "outcome": "completed",
+                "checks": [{
+                    "id": "test",
+                    "command": ["true"],
+                    "status": "failed",
+                    "exit_code": 1,
+                    "duration_ms": 10,
+                    "stdout_path": None,
+                    "stderr_path": None,
+                    "report_path": None,
+                }],
+            }],
+        }))
+        return path
+
+
 class ExecutionAndResumptionTests(unittest.TestCase):
     """End-to-end: real Store/Scheduler wiring against a real repository, fake Runtime
     (no real OpenCode server required)."""
@@ -1794,6 +1828,71 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             self.assertEqual("succeeded", items[0]["latest_run_status"])
             self.assertEqual(2, items[0]["attempts"])
             self.assertFalse(items[0]["checkpoint_present"])
+
+    def test_verification_failure_produces_promotable_checkpoint(self):
+        """
+        Task 6: a run whose adapter reported success but whose independently-
+        executed verification result came back not-clean must produce the same
+        reviewable/promotable checkpoint candidate an uncaught exception does --
+        exercised here through the real CLI checkpoint_candidate/promote_checkpoint/
+        active_work flow, not just at the Scheduler unit level (see
+        tests/test_orchestrator.py).
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(db)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            run(["repository", "add", "repo", str(repository_dir)])
+            run(["repository", "analyze", "repo", "--json"])
+            answers_file = root / "answers.json"
+            answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+            run(["repository", "answer", "repo", str(answers_file)])
+            code, out = run(["repository", "apply", "repo"])
+            self.assertEqual(0, code, out)
+
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Add CSV export.", "repositories": ["repo"],
+            }), encoding="utf-8")
+            run(["plan", "draft", "feature-export", str(request_file)])
+            plan_answers_file = root / "plan-answers.json"
+            plan_answers_file.write_text(json.dumps({
+                "components": {"repo": ["content"]}, "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+            }), encoding="utf-8")
+            run(["plan", "answer", "feature-export", str(plan_answers_file)])
+            code, out = run(["plan", "apply", "feature-export"])
+            self.assertEqual(0, code, out)
+
+            result = cli.execute_task(
+                store, registry, "repo", repository_dir, "feature-export",
+                {"id": "claude", "route": "api-key"}, runtime=_FakeVerificationFailingRuntime(root / "runs"),
+            )
+            self.assertEqual("failed", result["status"])
+            self.assertIn("final.test", result["error"])
+
+            items = cli.active_work(store, registry)
+            self.assertEqual("failed", items[0]["latest_run_status"])
+            self.assertTrue(items[0]["checkpoint_present"])
+
+            candidate = cli.checkpoint_candidate(store, "feature-export")
+            self.assertEqual("blocked", candidate["checkpoint"]["status"])
+            self.assertEqual(1, len(candidate["progress"]["blockers"]))
+            self.assertIn("final.test", candidate["progress"]["blockers"][0])
+            durable_path = cli.promote_checkpoint(repository_dir, "feature-export", candidate)
+            self.assertTrue(durable_path.is_file())
+            from esc_exec.contracts import validate_contract
+            from esc_exec.model import ManifestState
+            self.assertEqual(ManifestState.VALID, validate_contract("checkpoint", durable_path).state)
 
     def test_task_run_without_yes_only_previews(self):
         with TemporaryDirectory() as temp:

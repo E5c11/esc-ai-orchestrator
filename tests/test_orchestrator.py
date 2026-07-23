@@ -270,7 +270,10 @@ class OrchestratorTests(unittest.TestCase):
         only the independently-executed verification-result says otherwise. The run
         must still land as "failed", per plan/active/task-orchestration-and-
         verification-loop.md task 5: the verified artifact is authoritative, not
-        whatever the agent's own final message claimed.
+        whatever the agent's own final message claimed. Task 6: this must also route
+        into the same checkpoint mechanism an uncaught exception uses, since a
+        not-clean verified result is exactly the kind of blocker a human needs to
+        review before the task can be considered resolved.
         """
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -290,6 +293,11 @@ class OrchestratorTests(unittest.TestCase):
                 ["run.queued", "run.running", "run.failed"],
                 [event["type"] for event in store.events(run_id)],
             )
+            checkpoint = store.output_yaml(run_id, "checkpoint.yaml")
+            self.assertEqual("blocked", checkpoint["checkpoint"]["status"])
+            self.assertEqual(run_id, checkpoint["checkpoint"]["run_id"])
+            self.assertEqual(1, len(checkpoint["progress"]["blockers"]))
+            self.assertIn("final.test", checkpoint["progress"]["blockers"][0])
             scheduler.close()
 
     def test_adapter_runtime_executes_verification_plan_independently(self):

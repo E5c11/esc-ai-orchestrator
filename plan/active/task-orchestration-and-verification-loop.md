@@ -259,10 +259,30 @@ marked as such.
    suite: 123 -> 126 passing. Does not yet build a checkpoint for a verification-
    failed run (no exception was raised, so the existing except-block checkpoint path
    never fires) — that's task 6, deliberately not pulled forward here.
-6. **Not-clean path into existing checkpoints.** Route a not-clean verified result into
-   the existing `checkpoint_document`/`promote_checkpoint` mechanism, same as an
+6. ~~**Not-clean path into existing checkpoints.**~~ Route a not-clean verified result
+   into the existing `checkpoint_document`/`promote_checkpoint` mechanism, same as an
    uncaught exception does today — this is a new trigger for an existing path, not a
-   new mechanism. Depends on (5).
+   new mechanism. Depends on (5). Done 2026-07-23 in `esc-ai-orchestrator`, no separate
+   plan doc needed: `esc_orchestrator/scheduler.py`'s `_work` now calls a new shared
+   `_write_checkpoint_candidate` helper — factored out of the checkpoint-building code
+   the uncaught-exception branch already had, so both triggers build the same shape of
+   candidate through one path — when a run's verification result is not-clean, passing
+   `output` (the adapter's own real run_dir, already on disk with
+   `verification-plan.json`/`verification-result.json` in it) as the candidate
+   directory and one blocker string per failing gate/check (e.g.
+   `"final.test (failed, exit_code=1)"`), instead of the single opaque exception
+   message the except-branch uses. `checkpoint_candidate`/`promote_checkpoint`/
+   `active_work` in `escape_ai_cli.py` needed zero changes — they already worked from
+   `run["status"] == "failed"` plus a `checkpoint.yaml` under `output_path`, exactly
+   what this trigger now also produces. Tests: `tests/test_orchestrator.py`'s
+   verification-failure test now also asserts the checkpoint's shape; a new CLI-level
+   end-to-end test in `tests/test_escape_ai_cli.py`
+   (`test_verification_failure_produces_promotable_checkpoint`) drives a real
+   onboarded repository through `execute_task` with a runtime that reports success but
+   writes a not-clean `verification-result.json`, then through
+   `checkpoint_candidate`/`promote_checkpoint`/`active_work`, mirroring the existing
+   uncaught-exception version of that same test
+   (`test_execute_retry_promote_and_resume_view`). Full suite: 126 -> 127 passing.
 7. **Event-driven automatic advancement.** Hook "check (2) for newly-unblocked tasks and
    submit them" directly into the same place `update_run` already records a verified
    run's final status. Depends on (2) and (5).
@@ -280,7 +300,7 @@ marked as such.
    the pause once usage tracking is real. Do not stub a fake/hardcoded usage check to
    unblock this early — that would be worse than no check at all.
 
-Tasks 3, 4, and 5 are done (see above). Tasks 1, 2, 6, and 8 have everything they need
+Tasks 3, 4, 5, and 6 are done (see above). Tasks 1, 2, and 8 have everything they need
 designed. Task 7 is designed but depends on 1/2/5 — 5 is now done, so 7 is still
 blocked only on 1/2. Task 9 is real but explicitly sequenced after a *different*
 plan's work — don't pull it forward.
