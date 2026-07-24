@@ -24,10 +24,10 @@ through onboarding questions one at a time.
 - CLI binary: `escape-ai` (installed from `esc-ai-orchestrator`'s `pyproject.toml`).
 - Global flags, given *before* the subcommand: `--db <path>` (defaults to
   `.orchestrator/orchestrator.db` under the current directory) and `--registry <path>`
-  (defaults to a machine-local path — `~/.local/share/esc-ai/system.yaml` on Linux,
-  overridable via the `ESC_AI_REGISTRY` env var). Once a registry exists, reuse the
-  same one across sessions — it's what remembers which repositories/frameworks/
-  providers are registered.
+  (defaults to a machine-local path — `~/.config/esc-ai/system.yaml` on Linux via
+  `$XDG_CONFIG_HOME`, overridable via the `ESC_AI_REGISTRY` env var). Once a registry
+  exists, reuse the same one across sessions — it's what remembers which
+  repositories/frameworks/providers are registered.
 - Every command below is already non-interactive: it takes a file path, not a live
   prompt. There is a *separate* interactive conversational mode this doc does not use.
 

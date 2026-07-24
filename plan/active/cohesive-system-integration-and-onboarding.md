@@ -615,14 +615,39 @@ repository's `.esc-ai/` directory rather than the orchestrator's own working dir
 Both conditions hold: `build_task_context` resolves each component's declared
 architecture documents, and run artifacts resolve to `<repository>/.esc-ai/runs/`.
 
-### Phase 2 — Unified machine-local catalog
+### Phase 2 — Unified machine-local catalog — **Complete**
 
-- Define `system.yaml` schema and migration from `repositories.yaml`.
-- Support framework, repository, and optional extension routes.
-- Add stale/missing route repair actions and credential-provider references.
-- Keep catalog operations available as non-interactive commands.
+- Define `system.yaml` schema and migration from `repositories.yaml`. **Done** —
+  `esc_exec/registry.py`'s `validate_registry` enforces the de facto schema
+  (`schema_version`, `repositories`/`frameworks`/`ecosystems`/`orchestrator`/`ui`/
+  `credentials`/`providers` as the only known top-level fields); `default_registry_path()`
+  resolves the real machine-local location per platform (`ESC_AI_REGISTRY` env var
+  override, else `~/Library/Application Support/esc-ai/system.yaml` on macOS,
+  `%APPDATA%\esc-ai\system.yaml` on Windows, `$XDG_CONFIG_HOME/esc-ai/system.yaml`
+  — i.e. `~/.config/esc-ai/system.yaml` by default — on Linux). `migrate_legacy_registry`
+  is the explicit, non-interactive, never-automatic path from the old
+  `repositories.yaml` filename, exposed as `esc-exec system migrate`.
+- Support framework, repository, and optional extension routes. **Done** — `add_route`
+  handles repository/framework routes generically by category; `add_ecosystem` groups
+  repository IDs under a named ecosystem (the "optional extension" route this item
+  meant).
+- Add stale/missing route repair actions and credential-provider references. **Done**
+  — `validate_registry` detects a route pointing at a missing directory and emits the
+  exact repair command (`esc-exec route add <kind> <id> /new/path`), and separately
+  detects a framework ID that was renamed out from under an existing reference
+  (`RENAMED_FRAMEWORK_IDS`) with its own exact repair message. `credentials.provider`
+  is the credential-provider reference this item meant — a pointer to which secrets
+  provider is configured (e.g. `env`, a secrets-manager name), deliberately never an
+  actual secret value.
+- Keep catalog operations available as non-interactive commands. **Done** —
+  `esc-exec route add/resolve/list/validate/ecosystem` and `esc-exec system migrate`,
+  all argument-driven, no prompts.
 
-**Exit:** one catalog resolves all three products and every registered repository.
+**Exit:** one catalog resolves all three products and every registered repository. Met
+— the same `system.yaml`/route-resolution mechanism (`resolve_route`) is what both
+`esc-ai-execution-framework` and `esc-ai-orchestrator` use to resolve every repository
+and framework route in this document's other phases, and what `BACKDOOR.md` documents
+as the standing machine-local catalog across sessions.
 
 ### Phase 3 — Onboarding analysis engine — **Complete**
 
