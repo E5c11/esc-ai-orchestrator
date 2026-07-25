@@ -13,8 +13,8 @@ from esc_exec.architecture_lookup import load_architecture_index, resolve_archit
 from esc_exec.checkpoints import create_checkpoint, checkpoint_path, update_checkpoint
 from esc_exec.worktree import diff_summary, merge_worktree
 from esc_exec.claude_code_adapter import (
-    ClaudeCodeClient, ClaudeCodeError, claude_auth_status, claude_cli_available, suggest_architecture_coverage_gap,
-    suggest_onboarding_answers, suggest_work_type_drift,
+    ClaudeCodeClient, ClaudeCodeError, claude_auth_status, claude_cli_available, granted_categories,
+    suggest_architecture_coverage_gap, suggest_onboarding_answers, suggest_work_type_drift,
 )
 from esc_exec.codex_adapter import codex_auth_status, codex_cli_available
 from esc_exec.conversation import (
@@ -242,16 +242,46 @@ def render_active_work(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def render_execution_preview(repository_id: str, task_id: str, task_document: dict[str, Any], provider: dict[str, Any] | None = None) -> str:
+def render_execution_preview(
+    repository_id: str, task_id: str, task_document: dict[str, Any], provider: dict[str, Any] | None = None,
+    policy_document: dict[str, Any] | None = None, prior_consent_record: dict[str, Any] | None = None,
+) -> str:
+    """
+    `policy_document`/`prior_consent_record` are optional -- callers that don't
+    pass them (or the resume-menu preview, which reuses this for the same
+    "about to execute" text) just get the older, scope-agnostic preview. When
+    passed, this is the pre-flight consent step itself -- see
+    plan/future/pre-flight-consent-and-bounded-autonomy.md layer 1: a task
+    whose most recent run already recorded consent for the same categories
+    gets a short "already consented" line instead of re-explaining the scope
+    from scratch, but `--yes` is still required to actually dispatch every
+    time regardless -- recording consent removes re-litigating *why* a task
+    may touch these categories, not the separate, always-on "yes, run this
+    specific attempt now" gate the rest of this CLI uses everywhere.
+    """
     task = task_document["task"]
-    return "\n".join([
+    lines = [
         f"About to execute {repository_id}/{task_id}",
         f"Objective: {task['objective']}",
         f"Components: {', '.join(task_document['scope']['components'])}",
         f"Provider: {provider['id']} ({provider['route']})" if provider else "Provider: none connected yet",
-        "Workspace/policy: placeholder defaults (read-only policy) pending real "
-        "Configure system support -- this is not a finished permission story.",
-    ])
+    ]
+    if policy_document is not None:
+        categories = granted_categories(policy_document)
+        scope_text = ", ".join(categories) if categories else "read-only"
+        already_consented = (
+            prior_consent_record is not None
+            and set(prior_consent_record.get("granted_categories", [])) == set(categories)
+        )
+        if already_consented:
+            lines.append(f"Scope: {scope_text} (already consented on {prior_consent_record['granted_at']}).")
+        else:
+            lines.append(f"Scope: this run will be granted -- {scope_text}.")
+    lines.append(
+        "Policy: placeholder defaults pending real Configure system support -- "
+        "this is not a finished permission story."
+    )
+    return "\n".join(lines)
 
 
 def render_execution_result(result: dict[str, Any]) -> str:
@@ -568,6 +598,27 @@ def active_work(store: Store, registry: Path) -> list[dict[str, Any]]:
                 "checkpoint_present": candidate_present,
             })
     return items
+
+
+def prior_consent(store: Store, task_id: str) -> dict[str, Any] | None:
+    """
+    The most recent run's recorded `bindings.consent`, if any -- see
+    plan/future/pre-flight-consent-and-bounded-autonomy.md layer 1. Only the
+    latest run is consulted (Store doesn't expose full run history queried by
+    task), which is sufficient: a task's consent history only matters for
+    deciding whether *this* dispatch needs to re-explain scope, and the most
+    recent attempt is always the relevant precedent for that. A task with no
+    prior run, or whose most recent run's adapter never wrote a consent
+    binding (e.g. a fake/legacy runtime in tests), returns None -- treated by
+    render_execution_preview as "not yet consented," never as an error.
+    """
+    run = store.get_latest_run_for_task(task_id)
+    if run is None:
+        return None
+    run_document = store.output_document(run["id"], "run.json")
+    if not run_document:
+        return None
+    return run_document.get("bindings", {}).get("consent")
 
 
 def execute_task(
@@ -1718,7 +1769,10 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
                 print("Cancelled -- no provider connected.")
                 return 0
         task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
-        print(render_execution_preview(repository_id, task_id, load_yaml(task_path), provider))
+        print(render_execution_preview(
+            repository_id, task_id, load_yaml(task_path), provider,
+            default_policy(), prior_consent(store, task_id),
+        ))
         if not confirm("Execute this task now?"):
             print("Cancelled -- nothing was executed.")
             return 0
@@ -1969,7 +2023,10 @@ def _dispatch_task(args: argparse.Namespace, store: Store, registry: Path) -> in
             print(f"INVALID    {exc}")
             return 1
         provider = active_provider(registry)
-        print(render_execution_preview(repository_id, args.task_id, task_document, provider))
+        print(render_execution_preview(
+            repository_id, args.task_id, task_document, provider,
+            default_policy(), prior_consent(store, args.task_id),
+        ))
         if not args.yes:
             print("Preview only -- re-run with --yes to actually execute.")
             return 0

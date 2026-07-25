@@ -1674,6 +1674,37 @@ class ExecutionRenderingTests(unittest.TestCase):
         )
         self.assertIn("Provider: claude (subscription)", rendered)
 
+    def test_render_execution_preview_without_policy_omits_scope_line(self):
+        task_document = {"task": {"objective": "Add CSV export."}, "scope": {"components": ["content"]}}
+        rendered = cli.render_execution_preview("repo", "feature-export", task_document)
+        self.assertNotIn("Scope:", rendered)
+
+    def test_render_execution_preview_first_time_explains_scope(self):
+        task_document = {"task": {"objective": "Add CSV export."}, "scope": {"components": ["content"]}}
+        policy = {"permissions": {"read": "allow", "edit": "allow"}}
+        rendered = cli.render_execution_preview("repo", "feature-export", task_document, policy_document=policy)
+        self.assertIn("Scope: this run will be granted -- read, edit.", rendered)
+        self.assertNotIn("already consented", rendered)
+
+    def test_render_execution_preview_already_consented_for_matching_prior_grant(self):
+        task_document = {"task": {"objective": "Add CSV export."}, "scope": {"components": ["content"]}}
+        policy = {"permissions": {"read": "allow", "edit": "allow"}}
+        prior = {"granted_categories": ["edit", "read"], "granted_at": "2026-07-24T00:00:00Z"}
+        rendered = cli.render_execution_preview(
+            "repo", "feature-export", task_document, policy_document=policy, prior_consent_record=prior,
+        )
+        self.assertIn("already consented on 2026-07-24T00:00:00Z", rendered)
+
+    def test_render_execution_preview_reexplains_scope_when_categories_widen(self):
+        task_document = {"task": {"objective": "Add CSV export."}, "scope": {"components": ["content"]}}
+        policy = {"permissions": {"read": "allow", "edit": "allow", "execute": "allow"}}
+        prior = {"granted_categories": ["read"], "granted_at": "2026-07-24T00:00:00Z"}
+        rendered = cli.render_execution_preview(
+            "repo", "feature-export", task_document, policy_document=policy, prior_consent_record=prior,
+        )
+        self.assertNotIn("already consented", rendered)
+        self.assertIn("Scope: this run will be granted -- read, edit, execute.", rendered)
+
     def test_render_execution_result_shows_status_and_error(self):
         rendered = cli.render_execution_result({
             "run_id": "run-1", "attempt": 2, "status": "failed", "error": "boom", "output_path": "/tmp/x",
@@ -2275,6 +2306,122 @@ class WorktreeCheckpointFlowTests(unittest.TestCase):
                 ])
             self.assertEqual(0, code)
             self.assertIn("Merged worktree back", buffer.getvalue())
+
+
+class _FakeConsentRecordingRuntime:
+    """Writes a `bindings.consent` shaped exactly like ClaudeCodeAdapter.execute's
+    real one, without needing a real claude binary -- for testing the
+    orchestrator-side prior_consent()/render_execution_preview wiring in
+    isolation from the adapter that originates the data."""
+
+    def __init__(self, output_root: Path, granted_categories: list[str]):
+        self.output_root, self.granted_categories = output_root, granted_categories
+
+    def execute(self, contracts):
+        task_id = contracts["task"]["task"]["id"]
+        path = self.output_root / f"{task_id}-consent-run"
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "run.json").write_text(json.dumps({
+            "bindings": {"consent": {"granted_categories": self.granted_categories, "granted_at": "2026-07-24T00:00:00Z"}},
+        }), encoding="utf-8")
+        return path
+
+
+class PriorConsentTests(unittest.TestCase):
+    def test_prior_consent_none_for_task_with_no_runs(self):
+        with TemporaryDirectory() as temp:
+            store = Store(Path(temp) / "db.sqlite")
+            self.assertIsNone(cli.prior_consent(store, "never-run"))
+
+    def test_prior_consent_none_when_latest_run_has_no_consent_binding(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(db)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            run(["repository", "add", "repo", str(repository_dir)])
+            run(["repository", "analyze", "repo", "--json"])
+            answers_file = root / "answers.json"
+            answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+            run(["repository", "answer", "repo", str(answers_file)])
+            run(["repository", "apply", "repo"])
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Add CSV export.", "repositories": ["repo"],
+            }), encoding="utf-8")
+            run(["plan", "draft", "feature-export", str(request_file)])
+            plan_answers_file = root / "plan-answers.json"
+            plan_answers_file.write_text(json.dumps({
+                "components": {"repo": ["content"]}, "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+            }), encoding="utf-8")
+            run(["plan", "answer", "feature-export", str(plan_answers_file)])
+            run(["plan", "apply", "feature-export"])
+
+            cli.execute_task(
+                store, registry, "repo", repository_dir, "feature-export",
+                {"id": "claude", "route": "api-key"}, runtime=_FakeSucceedingRuntime(root / "runs"),
+            )
+            self.assertIsNone(cli.prior_consent(store, "feature-export"))
+
+    def test_second_dispatch_shows_already_consented_after_first_recorded_it(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            store = Store(db)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            run(["repository", "add", "repo", str(repository_dir)])
+            run(["repository", "analyze", "repo", "--json"])
+            answers_file = root / "answers.json"
+            answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+            run(["repository", "answer", "repo", str(answers_file)])
+            run(["repository", "apply", "repo"])
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Add CSV export.", "repositories": ["repo"],
+            }), encoding="utf-8")
+            run(["plan", "draft", "feature-export", str(request_file)])
+            plan_answers_file = root / "plan-answers.json"
+            plan_answers_file.write_text(json.dumps({
+                "components": {"repo": ["content"]}, "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+            }), encoding="utf-8")
+            run(["plan", "answer", "feature-export", str(plan_answers_file)])
+            run(["plan", "apply", "feature-export"])
+
+            categories = cli.granted_categories(cli.default_policy())
+            self.assertIsNone(cli.prior_consent(store, "feature-export"))
+            cli.execute_task(
+                store, registry, "repo", repository_dir, "feature-export",
+                {"id": "claude", "route": "api-key"},
+                runtime=_FakeConsentRecordingRuntime(root / "runs", categories),
+            )
+            recorded = cli.prior_consent(store, "feature-export")
+            self.assertEqual(sorted(categories), sorted(recorded["granted_categories"]))
+
+            task_document = cli.load_yaml(
+                repository_dir / ".esc-ai" / "workflows" / "active" / "feature-export" / "task.yaml"
+            )
+            rendered = cli.render_execution_preview(
+                "repo", "feature-export", task_document, None, cli.default_policy(), recorded,
+            )
+            self.assertIn("already consented on 2026-07-24T00:00:00Z", rendered)
 
 
 class ProviderTests(unittest.TestCase):
