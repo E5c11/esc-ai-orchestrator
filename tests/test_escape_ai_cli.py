@@ -1,6 +1,7 @@
 import builtins
 import io
 import json
+import subprocess
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1743,6 +1744,45 @@ class _FakeVerificationFailingRuntime:
         return path
 
 
+class _FakeWorktreeSucceedingRuntime:
+    """
+    Simulates what a real ClaudeCodeAdapter.execute run against
+    workspace.kind == "worktree" does: create the task's worktree via the real
+    `esc_exec.worktree` module (so this exercises real git, not a mock),
+    optionally leave an edit in it, then finalize (commit + keep-if-diff) --
+    and record the resulting `bindings.worktree` in a real run.json the same
+    shape ClaudeCodeAdapter.execute writes, so checkpoint_candidate's
+    worktree-aware branch has something real to read.
+    """
+
+    def __init__(self, output_root: Path, repository: Path, leave_a_diff: bool):
+        self.output_root, self.repository, self.leave_a_diff = output_root, repository, leave_a_diff
+
+    def execute(self, contracts):
+        from esc_exec.worktree import ensure_worktree, finalize_worktree, worktree_branch
+        task_id = contracts["task"]["task"]["id"]
+        worktree = ensure_worktree(self.repository, task_id)
+        if self.leave_a_diff:
+            (worktree / "agent-output.txt").write_text("agent output\n", encoding="utf-8")
+        kept = finalize_worktree(self.repository, task_id, f"escape-ai task {task_id}")
+        path = self.output_root / f"{task_id}-worktree-run"
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "run.json").write_text(json.dumps({
+            "bindings": {"worktree": {"branch": worktree_branch(task_id), "kept": kept}},
+        }), encoding="utf-8")
+        return path
+
+
+def _git_init(repository: Path) -> None:
+    def run(*args: str) -> None:
+        subprocess.run(["git", "-C", str(repository), *args], capture_output=True, text=True, check=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "Test")
+    run("add", "-A")
+    run("commit", "-q", "-m", "initial")
+
+
 class ExecutionAndResumptionTests(unittest.TestCase):
     """End-to-end: real Store/Scheduler wiring against a real repository, fake Runtime
     (no real OpenCode server required)."""
@@ -1807,7 +1847,7 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             self.assertTrue(items[0]["checkpoint_present"])
 
             # Promote the candidate into the durable, committable location.
-            candidate = cli.checkpoint_candidate(store, "feature-export")
+            candidate = cli.checkpoint_candidate(store, repository_dir, "feature-export")
             self.assertEqual(["provider unavailable"], candidate["progress"]["blockers"])
             durable_path = cli.promote_checkpoint(repository_dir, "feature-export", candidate)
             self.assertTrue(durable_path.is_file())
@@ -1884,7 +1924,7 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             self.assertEqual("failed", items[0]["latest_run_status"])
             self.assertTrue(items[0]["checkpoint_present"])
 
-            candidate = cli.checkpoint_candidate(store, "feature-export")
+            candidate = cli.checkpoint_candidate(store, repository_dir, "feature-export")
             self.assertEqual("blocked", candidate["checkpoint"]["status"])
             self.assertEqual(1, len(candidate["progress"]["blockers"]))
             self.assertIn("final.test", candidate["progress"]["blockers"][0])
@@ -2124,6 +2164,119 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             self.assertIn("'kind': 'onboarding'", out)
 
 
+class WorktreeCheckpointFlowTests(unittest.TestCase):
+    """
+    See plan/future/pre-flight-consent-and-bounded-autonomy.md layer 4: a
+    succeeded run that kept a worktree (a real diff) still needs a review step
+    before merging -- checkpoint_candidate synthesizes one, promote_checkpoint
+    merges on --yes. Real git throughout (via _FakeWorktreeSucceedingRuntime),
+    not mocked -- these are the same esc_exec.worktree calls
+    ClaudeCodeAdapter.execute makes for real.
+    """
+
+    def _setup(self, temp: Path):
+        root = Path(temp)
+        db = root / "db.sqlite"
+        registry = root / "registry.yaml"
+        repository_dir = root / "repo-checkout"
+        _make_gradle_repository(repository_dir)
+        _git_init(repository_dir)
+        store = Store(db)
+
+        def run(argv):
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+            return code, buffer.getvalue()
+
+        run(["repository", "add", "repo", str(repository_dir)])
+        run(["repository", "analyze", "repo", "--json"])
+        answers_file = root / "answers.json"
+        answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+        run(["repository", "answer", "repo", str(answers_file)])
+        code, out = run(["repository", "apply", "repo"])
+        self.assertEqual(0, code, out)
+
+        request_file = root / "request.json"
+        request_file.write_text(json.dumps({
+            "work_type": "feature", "objective": "Add CSV export.", "repositories": ["repo"],
+        }), encoding="utf-8")
+        run(["plan", "draft", "feature-export", str(request_file)])
+        plan_answers_file = root / "plan-answers.json"
+        plan_answers_file.write_text(json.dumps({
+            "components": {"repo": ["content"]}, "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+        }), encoding="utf-8")
+        run(["plan", "answer", "feature-export", str(plan_answers_file)])
+        code, out = run(["plan", "apply", "feature-export"])
+        self.assertEqual(0, code, out)
+        return root, store, registry, repository_dir
+
+    def test_succeeded_run_with_no_diff_has_no_checkpoint_candidate(self):
+        with TemporaryDirectory() as temp:
+            root, store, registry, repository_dir = self._setup(temp)
+            result = cli.execute_task(
+                store, registry, "repo", repository_dir, "feature-export",
+                {"id": "claude", "route": "api-key"},
+                runtime=_FakeWorktreeSucceedingRuntime(root / "runs", repository_dir, leave_a_diff=False),
+            )
+            self.assertEqual("succeeded", result["status"])
+            with self.assertRaises(ValueError):
+                cli.checkpoint_candidate(store, repository_dir, "feature-export")
+
+    def test_succeeded_run_with_a_diff_produces_a_reviewable_candidate(self):
+        with TemporaryDirectory() as temp:
+            root, store, registry, repository_dir = self._setup(temp)
+            result = cli.execute_task(
+                store, registry, "repo", repository_dir, "feature-export",
+                {"id": "claude", "route": "api-key"},
+                runtime=_FakeWorktreeSucceedingRuntime(root / "runs", repository_dir, leave_a_diff=True),
+            )
+            self.assertEqual("succeeded", result["status"])
+            candidate = cli.checkpoint_candidate(store, repository_dir, "feature-export")
+            self.assertEqual("ready-to-resume", candidate["checkpoint"]["status"])
+            self.assertTrue(candidate["worktree_merge_only"])
+            rendered = cli.render_checkpoint_candidate(candidate, repository_dir)
+            self.assertIn("Worktree diff:", rendered)
+            self.assertIn("agent-output.txt", rendered)
+
+    def test_promoting_a_worktree_only_candidate_merges_and_returns_none(self):
+        with TemporaryDirectory() as temp:
+            root, store, registry, repository_dir = self._setup(temp)
+            cli.execute_task(
+                store, registry, "repo", repository_dir, "feature-export",
+                {"id": "claude", "route": "api-key"},
+                runtime=_FakeWorktreeSucceedingRuntime(root / "runs", repository_dir, leave_a_diff=True),
+            )
+            candidate = cli.checkpoint_candidate(store, repository_dir, "feature-export")
+            outcome = cli.promote_checkpoint(repository_dir, "feature-export", candidate)
+            self.assertIsNone(outcome)
+            self.assertTrue((repository_dir / "agent-output.txt").is_file())
+            from esc_exec.worktree import worktree_path
+            self.assertFalse(worktree_path(repository_dir, "feature-export").is_dir())
+            # No durable checkpoint was written -- nothing to record, the merge
+            # was the whole point.
+            from esc_exec.checkpoints import checkpoint_path
+            self.assertFalse(checkpoint_path(repository_dir, "feature-export").is_file())
+
+    def test_promote_checkpoint_cli_reports_merge_not_a_checkpoint_path(self):
+        with TemporaryDirectory() as temp:
+            root, store, registry, repository_dir = self._setup(temp)
+            db = root / "db.sqlite"
+            cli.execute_task(
+                store, registry, "repo", repository_dir, "feature-export",
+                {"id": "claude", "route": "api-key"},
+                runtime=_FakeWorktreeSucceedingRuntime(root / "runs", repository_dir, leave_a_diff=True),
+            )
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = cli.main([
+                    "--db", str(db), "--registry", str(registry),
+                    "task", "promote-checkpoint", "repo", "feature-export", "--yes",
+                ])
+            self.assertEqual(0, code)
+            self.assertIn("Merged worktree back", buffer.getvalue())
+
+
 class ProviderTests(unittest.TestCase):
     def test_default_adapter_routes_subscription_to_claude_code(self):
         adapter = cli.default_adapter({"id": "claude", "route": "subscription"})
@@ -2143,6 +2296,16 @@ class ProviderTests(unittest.TestCase):
         # invent an adapter for it.
         adapter = cli.default_adapter({"id": "gemini", "route": "subscription"})
         self.assertEqual("opencode", adapter["adapter"]["provider"])
+
+    def test_default_workspace_requests_worktree_isolation(self):
+        # See plan/future/pre-flight-consent-and-bounded-autonomy.md layer 4 --
+        # unlike default_policy's deliberately-conservative placeholder, worktree
+        # isolation has no compatibility cost once the adapter supports it, so
+        # this is the real default, not a stand-in for one.
+        workspace = cli.default_workspace("ampm-backend")
+        self.assertEqual("worktree", workspace["workspace"]["kind"])
+        self.assertEqual("filesystem", workspace["workspace"]["isolation"])
+        self.assertEqual("ampm-backend", workspace["workspace"]["repository"])
 
     def test_resolve_runtime_picks_claude_code_runtime_for_subscription(self):
         from esc_orchestrator.runtime import ClaudeCodeRuntime

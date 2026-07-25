@@ -161,11 +161,18 @@ class Scheduler:
             task_path = repository / ".esc-ai" / "workflows" / "active" / unblocked_task_id / "task.yaml"
             submitted = self.store.submit_if_new({
                 "task": load_yaml(task_path),
+                # Mirrors escape_ai_cli.default_workspace's shape (can't import
+                # it directly -- that module imports Scheduler from here, and
+                # a reverse import would be circular). See
+                # plan/future/pre-flight-consent-and-bounded-autonomy.md
+                # layer 4 -- an auto-advanced task gets the same worktree
+                # isolation a manually-dispatched one does, not the old
+                # `local`/`process` default.
                 "workspace": {
                     "schema_version": 1,
                     "workspace": {
-                        "id": f"workspace-{repository_id}-default", "kind": "local",
-                        "repository": repository_id, "isolation": "process",
+                        "id": f"workspace-{repository_id}-default", "kind": "worktree",
+                        "repository": repository_id, "isolation": "filesystem",
                     },
                 },
                 "adapter": contracts["adapter"],

@@ -11,6 +11,7 @@ from typing import Any
 from esc_exec.adapters import detect_build_system
 from esc_exec.architecture_lookup import load_architecture_index, resolve_architecture_docs
 from esc_exec.checkpoints import create_checkpoint, checkpoint_path, update_checkpoint
+from esc_exec.worktree import diff_summary, merge_worktree
 from esc_exec.claude_code_adapter import (
     ClaudeCodeClient, ClaudeCodeError, claude_auth_status, claude_cli_available, suggest_architecture_coverage_gap,
     suggest_onboarding_answers, suggest_work_type_drift,
@@ -264,7 +265,7 @@ def render_execution_result(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_checkpoint_candidate(candidate: dict[str, Any]) -> str:
+def render_checkpoint_candidate(candidate: dict[str, Any], repository_path: Path | None = None) -> str:
     checkpoint, progress = candidate["checkpoint"], candidate["progress"]
     lines = [
         f"Checkpoint candidate from run {candidate['run_id']} -- status: {checkpoint['status']}",
@@ -273,6 +274,13 @@ def render_checkpoint_candidate(candidate: dict[str, Any]) -> str:
     ]
     if progress.get("decisions"):
         lines += ["Decisions:", *(f"  - {decision}" for decision in progress["decisions"])]
+    # See plan/future/pre-flight-consent-and-bounded-autonomy.md layer 4: the
+    # worktree diff is the review step for anything the task touched, surfaced
+    # in the same preview a human already gets before deciding --yes.
+    if repository_path is not None:
+        summary = diff_summary(repository_path, checkpoint["task_id"])
+        if summary:
+            lines += ["Worktree diff:", *(f"  {line}" for line in summary.splitlines())]
     return "\n".join(lines)
 
 
@@ -381,11 +389,24 @@ def validate_all(repository_path: Path, registry: Path) -> list[ValidationResult
 # ---------------------------------------------------------------------------
 
 def default_workspace(repository_id: str) -> dict[str, Any]:
+    """
+    `kind: worktree` -- see plan/future/pre-flight-consent-and-bounded-autonomy.md
+    layer 4: the Claude Code adapter creates a disposable git worktree for the
+    task rather than editing the live checkout directly, so an unanticipated
+    change is contained and reviewable (via `task promote-checkpoint`) instead of
+    needing to be prevented mid-run. Unlike the policy default just below, this
+    isn't a "deliberately conservative placeholder" situation -- worktree
+    isolation is strictly safer than `local`/`process` with no compatibility
+    cost (see that plan doc's finding that host-level state like JDK/DB/
+    credentials is unaffected by which worktree is active), so there's no
+    reason to default to anything less here once the adapter actually supports
+    it.
+    """
     return {
         "schema_version": 1,
         "workspace": {
-            "id": f"workspace-{repository_id}-default", "kind": "local",
-            "repository": repository_id, "isolation": "process",
+            "id": f"workspace-{repository_id}-default", "kind": "worktree",
+            "repository": repository_id, "isolation": "filesystem",
         },
     }
 
@@ -586,20 +607,61 @@ def execute_task(
     }
 
 
-def checkpoint_candidate(store: Store, task_id: str) -> dict[str, Any]:
+def checkpoint_candidate(store: Store, repository_path: Path, task_id: str) -> dict[str, Any]:
+    """
+    A failed run's real checkpoint.yaml is the usual candidate. A *succeeded*
+    run has no checkpoint.yaml at all (that file is only ever written on the
+    failure/blocked path) -- but if it kept a worktree (a real diff worth
+    reviewing, see plan/future/pre-flight-consent-and-bounded-autonomy.md
+    layer 4), it still needs the same review-before-merge step, so one is
+    synthesized here rather than requiring `promote-checkpoint` to grow a
+    second, parallel command just to reach the same merge step.
+    """
     run = store.get_latest_run_for_task(task_id)
-    if run is None or run["status"] != "failed" or not run.get("output_path"):
-        raise ValueError(f"no failed run with a checkpoint candidate for `{task_id}`")
+    if run is None or not run.get("output_path"):
+        raise ValueError(f"no run with a checkpoint candidate for `{task_id}`")
     candidate_path = Path(run["output_path"]) / "checkpoint.yaml"
-    if not candidate_path.is_file():
-        raise ValueError(f"no checkpoint candidate found at {candidate_path}")
-    return {"run_id": run["id"], **load_yaml(candidate_path)}
+    if candidate_path.is_file():
+        return {"run_id": run["id"], **load_yaml(candidate_path)}
+    if run["status"] == "succeeded":
+        run_document = store.output_document(run["id"], "run.json")
+        worktree = (run_document or {}).get("bindings", {}).get("worktree")
+        if worktree and worktree.get("kept"):
+            task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
+            objective = load_yaml(task_path)["task"]["objective"] if task_path.is_file() else task_id
+            return {
+                "run_id": run["id"], "worktree_merge_only": True,
+                "checkpoint": {"id": f"checkpoint-{task_id}", "task_id": task_id, "status": "ready-to-resume", "objective": objective},
+                "progress": {
+                    "completed": [], "decisions": [],
+                    "remaining": ["Review the worktree diff below, then re-run with --yes to merge it."],
+                    "blockers": [], "artifacts": [],
+                },
+            }
+    raise ValueError(f"no checkpoint candidate found for `{task_id}`")
 
 
-def promote_checkpoint(repository_path: Path, task_id: str, candidate: dict[str, Any]) -> Path:
+def promote_checkpoint(repository_path: Path, task_id: str, candidate: dict[str, Any]) -> Path | None:
     """Promotes a transient run-failure checkpoint candidate into the durable,
     committable location -- always after human review of `candidate`'s contents,
-    never a blind copy triggered automatically on failure."""
+    never a blind copy triggered automatically on failure.
+
+    `candidate["worktree_merge_only"]` (set only by checkpoint_candidate's
+    synthesized succeeded-run case above) merges the task's worktree branch
+    back and removes the worktree instead of writing a durable checkpoint --
+    there's no real blocker to record, the merge is the whole point, so this
+    returns None rather than a checkpoint path. A *failed* run's checkpoint
+    never auto-merges here, even if it kept a worktree: independent
+    verification already confirmed a succeeded run was clean (see
+    task-orchestration-and-verification-loop.md's "trust the artifact, not the
+    agent"), but a failed run's worktree may hold half-finished or broken
+    edits -- merging those needs a human decision this function doesn't make
+    for them. That worktree stays in place for manual inspection
+    (`esc_exec.worktree.merge_worktree`/`remove_worktree` directly) until a
+    dedicated resolution verb exists (see that plan doc's open question 5)."""
+    if candidate.get("worktree_merge_only"):
+        merge_worktree(repository_path, task_id)
+        return None
     checkpoint, progress = candidate["checkpoint"], candidate["progress"]
     task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
     if not task_path.is_file():
@@ -1666,16 +1728,16 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
 
     if action_choice == 1:
         try:
-            candidate = checkpoint_candidate(store, task_id)
+            candidate = checkpoint_candidate(store, repository_path, task_id)
         except ValueError as exc:
             print(f"Cannot promote: {exc}")
             return 1
-        print(render_checkpoint_candidate(candidate))
+        print(render_checkpoint_candidate(candidate, repository_path))
         if not confirm("Promote this checkpoint into the durable workflow?"):
             print("Cancelled -- nothing was promoted.")
             return 0
         path = promote_checkpoint(repository_path, task_id, candidate)
-        print(f"Promoted checkpoint to {path}")
+        print(f"Merged worktree back; no checkpoint to record." if path is None else f"Promoted checkpoint to {path}")
         return 0
 
     return 0
@@ -1921,16 +1983,16 @@ def _dispatch_task(args: argparse.Namespace, store: Store, registry: Path) -> in
     if args.task_command == "promote-checkpoint":
         try:
             repository_id, repository_path = resolve_repository(args.repository, registry)
-            candidate = checkpoint_candidate(store, args.task_id)
+            candidate = checkpoint_candidate(store, repository_path, args.task_id)
         except (ValueError, KeyError, FileNotFoundError) as exc:
             print(f"INVALID    {exc}")
             return 1
-        print(render_checkpoint_candidate(candidate))
+        print(render_checkpoint_candidate(candidate, repository_path))
         if not args.yes:
             print("Preview only -- re-run with --yes to actually promote.")
             return 0
         path = promote_checkpoint(repository_path, args.task_id, candidate)
-        print(f"Promoted checkpoint to {path}")
+        print("Merged worktree back; no checkpoint to record." if path is None else f"Promoted checkpoint to {path}")
         return 0
 
     if args.task_command == "impact":
