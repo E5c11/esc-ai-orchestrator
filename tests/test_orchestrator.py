@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 from urllib.request import Request, urlopen
 
 from esc_exec.dependencies import generate_dependency_graph
@@ -21,7 +22,7 @@ from esc_orchestrator.store import Store
 
 
 class FakeRuntime:
-    def __init__(self, output_root: Path, verification_status: str | None = None):
+    def __init__(self, output_root: Path, verification_status: str | None = None, permission_denials: list | None = None):
         """
         `verification_status`, when set, writes a `verification-result.json` the
         way a real `_AdapterRuntime` (via `execute_verification_plan`) would --
@@ -29,9 +30,16 @@ class FakeRuntime:
         by default so existing tests keep exercising the pre-task-5 "no
         verification-result.json produced" case (e.g. an adapter whose task has no
         verification profile at all), which must still resolve to "succeeded".
+
+        `permission_denials`, when set, writes a `permission-denials.json` the
+        way a real ClaudeCodeAdapter run would when the hard-deny list (or any
+        other Claude Code permission check) blocked a tool call -- exercising
+        layer 6's third checkpoint trigger (see
+        plan/future/pre-flight-consent-and-bounded-autonomy.md).
         """
         self.output_root = output_root
         self.verification_status = verification_status
+        self.permission_denials = permission_denials
 
     def execute(self, contracts):
         path = self.output_root / contracts["task"]["task"]["id"]
@@ -63,6 +71,11 @@ class FakeRuntime:
                         "report_path": None,
                     }],
                 }],
+            }))
+        if self.permission_denials is not None:
+            (path / "permission-denials.json").write_text(json.dumps({
+                "schema_version": 1, "task_id": "task-1", "generated_at": "2026-07-24T00:00:00Z",
+                "denials": self.permission_denials,
             }))
         return path
 
@@ -264,6 +277,68 @@ class OrchestratorTests(unittest.TestCase):
             scheduler.queue.join()
             self.assertEqual("succeeded", store.get_run(run_id)["status"])
             self.assertIsNone(store.get_run(run_id)["error"])
+            scheduler.close()
+
+    def test_permission_denial_marks_run_waiting_approval_not_succeeded(self):
+        """
+        Layer 6: an adapter that reports done, with verification either absent
+        or passed, but at least one permission-denied tool call, must not be
+        recorded as a plain "succeeded" -- see
+        plan/future/pre-flight-consent-and-bounded-autonomy.md.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            denials = [{"tool_name": "Bash", "tool_input": {"command": "rm -rf /tmp/x"}}]
+            scheduler = Scheduler(store, FakeRuntime(root / "runs", permission_denials=denials), registry)
+            task_id, run_id = scheduler.submit(contracts())
+            scheduler.queue.join()
+            run = store.get_run(run_id)
+            self.assertEqual("waiting-approval", run["status"])
+            self.assertIn("permission denied", run["error"])
+            self.assertIn("Bash", run["error"])
+            checkpoint_path = Path(run["output_path"]) / "checkpoint.yaml"
+            self.assertTrue(checkpoint_path.is_file())
+            scheduler.close()
+
+    def test_permission_denial_does_not_auto_advance(self):
+        """A permission-denial run must take the same "never auto-advance" path
+        a failed run does -- only the plain "succeeded" branch calls
+        self._advance."""
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            denials = [{"tool_name": "Read", "tool_input": {"file_path": ".env"}}]
+            scheduler = Scheduler(store, FakeRuntime(root / "runs", permission_denials=denials), registry)
+            with patch.object(Scheduler, "_advance") as advance:
+                task_id, run_id = scheduler.submit(contracts())
+                scheduler.queue.join()
+            self.assertEqual("waiting-approval", store.get_run(run_id)["status"])
+            advance.assert_not_called()
+            scheduler.close()
+
+    def test_permission_denial_with_no_denials_key_still_succeeds(self):
+        """An empty denials list (the normal case -- every real run gets this
+        artifact, most have nothing in it) must not be treated as a denial."""
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            scheduler = Scheduler(store, FakeRuntime(root / "runs", permission_denials=[]), registry)
+            task_id, run_id = scheduler.submit(contracts())
+            scheduler.queue.join()
+            self.assertEqual("succeeded", store.get_run(run_id)["status"])
             scheduler.close()
 
     def _write_task_yaml(

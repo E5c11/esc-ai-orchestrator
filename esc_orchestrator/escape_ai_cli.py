@@ -585,8 +585,11 @@ def active_work(store: Store, registry: Path) -> list[dict[str, Any]]:
             task_document = load_yaml(task_path)
             task_id = task_document["task"]["id"]
             latest_run = store.get_latest_run_for_task(task_id)
+            # "waiting-approval" (layer 6: a permission denial, not a code
+            # failure) gets a checkpoint candidate the same way "failed" does --
+            # both are a human-reviewable blocker, just a different kind of one.
             candidate_present = bool(
-                latest_run and latest_run["status"] == "failed" and latest_run.get("output_path")
+                latest_run and latest_run["status"] in ("failed", "waiting-approval") and latest_run.get("output_path")
                 and (Path(latest_run["output_path"]) / "checkpoint.yaml").is_file()
             )
             items.append({

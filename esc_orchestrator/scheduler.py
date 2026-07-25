@@ -45,6 +45,32 @@ def _verification_failure_summary(failures: list[str]) -> str:
     return "verification failed: " + ", ".join(failures)
 
 
+def _permission_denials(output: Path) -> list[dict[str, Any]] | None:
+    """
+    Reads the `permission-denials.json` a ClaudeCodeAdapter run writes -- see
+    plan/future/pre-flight-consent-and-bounded-autonomy.md layer 6. Returns
+    None if absent, same discipline as `_verification_result`: every other
+    adapter (no per-action permission classifier to report from) and an older
+    run predating this file are both read as "no signal here," not an error.
+    """
+    path = output / "permission-denials.json"
+    if not path.is_file():
+        return None
+    document = json.loads(path.read_text(encoding="utf-8"))
+    return document.get("denials", [])
+
+
+def _permission_denial_blockers(denials: list[dict[str, Any]]) -> list[str]:
+    return [
+        f"permission denied: {denial.get('tool_name')} ({json.dumps(denial.get('tool_input'))[:200]})"
+        for denial in denials
+    ]
+
+
+def _permission_denial_summary(blockers: list[str]) -> str:
+    return "; ".join(blockers)
+
+
 def _write_checkpoint_candidate(
     store: Store, task_id: str, run_id: str, candidate_dir: Path, blockers: list[str],
 ) -> None:
@@ -98,6 +124,21 @@ class Scheduler:
                     _write_checkpoint_candidate(self.store, task_id, run_id, output, failures)
                     self.store.update_run(
                         run_id, "failed", str(output), _verification_failure_summary(failures)
+                    )
+                elif (denials := _permission_denials(output)):
+                    # Layer 6's third checkpoint trigger, alongside verification-
+                    # failure above and the uncaught-exception branch below: the
+                    # agent itself reported done (no exception, and verification
+                    # -- if this task even has any -- passed), but at least one
+                    # tool call was denied by the hard-deny list or another
+                    # Claude Code permission check. Never auto-advances --
+                    # "waiting-approval" means a human needs to decide whether to
+                    # broaden the grant and retry, not that the task's objective
+                    # was actually reached.
+                    blockers = _permission_denial_blockers(denials)
+                    _write_checkpoint_candidate(self.store, task_id, run_id, output, blockers)
+                    self.store.update_run(
+                        run_id, "waiting-approval", str(output), _permission_denial_summary(blockers)
                     )
                 else:
                     self.store.update_run(run_id, "succeeded", str(output))
