@@ -1,7 +1,16 @@
 # Pre-Flight Consent and Bounded Autonomy — Plan
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-07-24
+**Implemented:** 2026-07-25 — all four layers shipped and tested: layer 3
+(esc-ai-execution-framework `34395ae`), layer 4
+(esc-ai-execution-framework `35bc50c`, esc-ai-orchestrator `a61e820`), layer 1
+(esc-ai-execution-framework `9760d74`, esc-ai-orchestrator `8ce01f1`), layer 6
+(esc-ai-execution-framework `67f5660`, esc-ai-orchestrator `b1eaa7d`). Landing
+here doesn't mean every open question below was resolved -- several
+sub-questions (exact discard-without-merging verb, the budget/cost hard-stop,
+the initial hard-deny list's completeness) are explicitly still open, not
+designed further than what's already noted.
 **Objective:** Replace the Claude Code adapter's current all-or-nothing,
 category-level permission gate with a three-layer model — one upfront human
 sign-off on what a task is allowed to do, then full autonomy within that scope, a
