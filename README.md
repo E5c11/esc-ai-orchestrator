@@ -48,6 +48,12 @@ escape-ai plan draft <initiative-id> <request.json>       # {work_type, objectiv
 escape-ai plan answer <initiative-id> <answers.json>      # stage answers
 escape-ai plan apply <initiative-id>                      # the explicit write step
 escape-ai plan status <initiative-id>
+escape-ai plan ready <initiative-id>                      # tasks in this initiative that are
+                                                           # unblocked and never submitted
+
+escape-ai provider auth <name> [--route subscription|api-key]   # connect an AI provider once;
+                                                                 # required before `task run`
+                                                                 # can submit anything for real
 
 escape-ai resume [--json]                                 # active work across registered
                                                            # repositories: latest run status,
@@ -60,6 +66,8 @@ escape-ai task promote-checkpoint <repository-id> <task-id> [--yes]   # preview 
                                                                        # into a durable
                                                                        # .esc-ai/workflows/active/
                                                                        # checkpoint with --yes
+escape-ai task impact <task-id>                           # show which other initiative tasks
+                                                           # this completed task unblocks
 ```
 
 `analyze`/`answer`/`apply` (and `plan draft`/`answer`/`apply`) are deliberately
@@ -85,9 +93,14 @@ or writing anything; `--yes` is the one explicit approval boundary that actually
 submits the task to the `Scheduler`/runtime or writes the promoted checkpoint file.
 A failed attempt is retained as a transient checkpoint candidate and does not block
 retrying the same task; each retry increments an attempt count tracked per task.
-Workspace, adapter, and policy are currently placeholder defaults (a conservative,
-read-only policy) pending real "Configure system" support — `task run`'s preview
-output says so explicitly rather than presenting them as finished configuration.
+Workspace defaults to `kind: worktree` — the agent edits a disposable git worktree,
+not the live checkout, so an unanticipated change is contained and reviewable via
+`task promote-checkpoint` rather than needing to be prevented mid-run; this is a
+permanent default, not a placeholder. Adapter resolves to whichever provider is
+actually connected via `provider auth`. Policy is still a genuine placeholder — a
+conservative, read-only default pending real "Configure system" support — and
+`task run`'s preview output says so explicitly rather than presenting it as
+finished configuration.
 
 Endpoints:
 
