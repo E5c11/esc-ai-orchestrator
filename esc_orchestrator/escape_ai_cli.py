@@ -278,8 +278,10 @@ def render_execution_preview(
         else:
             lines.append(f"Scope: this run will be granted -- {scope_text}.")
     lines.append(
-        "Policy: placeholder defaults pending real Configure system support -- "
-        "this is not a finished permission story."
+        "Policy: full autonomy within the granted categories, contained by the "
+        "hard-deny list and disposable worktree isolation (external_paths scoping "
+        "and budget/cost limits are still unbuilt -- see plan/done/pre-flight-"
+        "consent-and-bounded-autonomy.md)."
     )
     return "\n".join(lines)
 
@@ -412,10 +414,18 @@ def validate_all(repository_path: Path, registry: Path) -> list[ValidationResult
 
 
 # ---------------------------------------------------------------------------
-# Execution and resumption -- Phase 8. Workspace/adapter/policy defaults below are
+# Execution and resumption -- Phase 8. Workspace/adapter defaults below are
 # PLACEHOLDERS pending real "Configure system" support (not built yet, still a stub
-# menu item). The policy default is deliberately conservative (read-only) -- never
-# default to a permissive policy just because there's no configuration UI yet.
+# menu item) for anything *beyond* the category-level grant -- external_paths
+# scoping and budget/cost limits (see plan/done/pre-flight-consent-and-bounded-
+# autonomy.md's still-open sub-questions in items 3 and 6) aren't enforced yet.
+# The category-level grant itself is not a placeholder: per that plan's layers
+# 1-4, a task is granted read+edit+execute+network outright (not fine-grained
+# per-path/per-action -- the plan's own "Non-goals" rejected that shape after
+# finding real tasks legitimately wander outside their declared component
+# scope), contained by HARD_DENY_SETTINGS (claude_code_adapter.py) and
+# disposable worktree isolation (default_workspace below), not by withholding
+# categories up front. `--yes` remains the human consent gate every time.
 # ---------------------------------------------------------------------------
 
 def default_workspace(repository_id: str) -> dict[str, Any]:
@@ -487,13 +497,31 @@ def resolve_runtime(provider: dict[str, Any], registry: Path, opencode_server: s
 
 
 def default_policy() -> dict[str, Any]:
+    """
+    Full read+edit+execute+network autonomy for a task run, per
+    plan/done/pre-flight-consent-and-bounded-autonomy.md layers 1-2 -- one coarse
+    category-level grant, not a fine-grained per-path/per-action schema (the plan's
+    own "Non-goals" rejected that shape: real tasks legitimately discover they need
+    to touch code outside their declared component scope, and a strict allowlist
+    would just block the move a task legitimately needs to make). Safety comes from
+    layer 3 (HARD_DENY_SETTINGS in claude_code_adapter.py -- a short, universal,
+    always-on deny list for categorically hazardous operations regardless of a
+    task's grant) and layer 4 (disposable worktree isolation, default_workspace
+    above) -- not from withholding categories up front. `external_paths` stays
+    denied (no per-call path-scoping mechanism exists yet -- tools_for_policy's own
+    docstring notes this isn't enforced by category alone). `--yes` on `task run`
+    is the actual human consent gate, unchanged by this default.
+    """
     return {
         "schema_version": 1,
         "policy": {
-            "id": "default-readonly",
-            "description": "Placeholder pending Configure system: read-only, no edit/execute/network.",
+            "id": "full-autonomy",
+            "description": (
+                "Full read/edit/execute/network autonomy within this task, contained by "
+                "the hard-deny list and disposable worktree isolation, not per-path scoping."
+            ),
         },
-        "permissions": {"read": "allow", "edit": "deny", "execute": "deny", "network": "deny", "external_paths": "deny"},
+        "permissions": {"read": "allow", "edit": "allow", "execute": "allow", "network": "allow", "external_paths": "deny"},
     }
 
 

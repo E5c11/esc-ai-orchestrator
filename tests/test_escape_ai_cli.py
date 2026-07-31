@@ -1652,7 +1652,10 @@ class ExecutionRenderingTests(unittest.TestCase):
     def test_render_active_work_empty(self):
         self.assertIn("No active work", cli.render_active_work([]))
 
-    def test_render_execution_preview_flags_placeholder_policy(self):
+    def test_render_execution_preview_states_full_autonomy_policy(self):
+        # Since plan/done/pre-flight-consent-and-bounded-autonomy.md's category-level
+        # grant landed, default_policy() is no longer read-only-by-placeholder -- the
+        # preview's trailing Policy line should say so, not call it a placeholder.
         task_document = {
             "task": {"objective": "Add CSV export."},
             "scope": {"components": ["content"]},
@@ -1660,7 +1663,7 @@ class ExecutionRenderingTests(unittest.TestCase):
         rendered = cli.render_execution_preview("repo", "feature-export", task_document)
         self.assertIn("repo/feature-export", rendered)
         self.assertIn("content", rendered)
-        self.assertIn("placeholder", rendered)
+        self.assertIn("full autonomy", rendered)
 
     def test_render_execution_preview_with_no_provider_says_so(self):
         task_document = {"task": {"objective": "Add CSV export."}, "scope": {"components": ["content"]}}
@@ -2175,7 +2178,7 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             code, out = run(["task", "run", "repo", "feature-export"])
             self.assertEqual(0, code)
             self.assertIn("Preview only", out)
-            self.assertIn("placeholder", out)
+            self.assertIn("full autonomy", out)
             self.assertIn("Provider: none connected yet", out)
 
     def test_task_run_with_yes_and_no_provider_is_incomplete(self):
