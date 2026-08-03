@@ -1,12 +1,21 @@
 # Run-Outcome Surfacing: No-Op Success and Dependency Chains — Plan
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-08-03
+**Implemented:** 2026-08-03 — both designs shipped and tested in esc-ai-orchestrator:
+`Scheduler._run_produced_changes`/`succeeded-no-changes` status (skipping
+`_advance`), `checkpoint_candidate`/`promote_checkpoint`'s `no_changes` synthesis,
+and `apply_plan`/`render_plan_result`'s dependency-chain output. The secondary
+instruction-bundle wording suggestion also shipped, in
+esc-ai-execution-framework's root `INSTRUCTIONS.md` (not `build_instruction_bundle`
+itself — see design 1's note and open question 1 below for why). Landing here
+doesn't mean every open question was resolved as originally framed — see each
+one's own note.
 **Objective:** Two cases where escape-ai's own output already implies a fact the CLI
 never states outright, forcing a human to read raw JSON/YAML by hand to recover it —
 a `plan apply` that silently locks in a straight-chain task ordering, and a `task run`
 that reports `succeeded` for a run that wrote no code at all. Distilled from
-`plan/done/escape-ai-improvements.md` findings #7 and #9.
+`plan/active/escape-ai-improvements.md` findings #7 and #9.
 
 ## Why this is a separate plan
 
@@ -95,9 +104,13 @@ workspace, if one is available. If no change was produced:
 Separately (the dogfooding doc's own secondary suggestion): the instruction bundle
 handed to the agent for a `--yes`/full-autonomy dispatch should say explicitly that
 no human will see a clarifying question mid-run, so the agent should make the
-reasonable autonomous call and document it, rather than stopping to ask. This is a
-wording change to the instruction-bundle template (`esc_exec`'s
-`build_instruction_bundle`), not a schema/status change — worth doing alongside the
+reasonable autonomous call and document it, rather than stopping to ask. **Shipped
+in `esc-ai-execution-framework`'s root `INSTRUCTIONS.md`, not
+`build_instruction_bundle` itself** — that function only assembles a list of
+precedence-ordered *source references* (document IDs, manifest paths), never
+prose; the actual instruction text lives in the referenced documents, and
+`INSTRUCTIONS.md` is the one every task's `execution_framework_core` bundle
+level always references regardless of task specifics. Worth doing alongside the
 status fix above since it addresses the same finding's root behavior (the agent
 choosing to ask instead of act), not just its symptom (the ambiguous status).
 
@@ -138,14 +151,26 @@ rendering addition — `apply_plan`'s task-construction logic is unchanged.
 
 ## Open questions
 
-1. For a run with no worktree isolation at all (today's default, per
-   `pre-flight-consent-and-bounded-autonomy.md`'s finding that worktree isolation
-   isn't universally wired in yet) — is a `git diff --quiet` against the live
-   workspace a safe, cheap check to add at this exact point in `Scheduler._work`, or
-   does it need the workspace path threaded through in a way it isn't today? Not
-   verified against current code; needs a look at what `runtime.execute`'s return
-   value (`output`, a `Path`) actually gives access to before implementation.
-2. Whether `succeeded-no-changes` should count as "success" or "failure" for CLI
-   exit-code purposes (`escape_ai_cli.py:2069`'s `return 0 if result["status"] ==
-   "succeeded" else 1`) — leaning toward non-zero (it needs human attention, same as
-   a real failure), but not decided.
+1. **Resolved 2026-08-03, deliberately narrower than sketched:** no live `git
+   diff --quiet` fallback was built. `_run_produced_changes` (`scheduler.py`)
+   reads only `run.json`'s `bindings.worktree.kept`; when that key is absent
+   entirely — no `run.json` (some test doubles), or a real run with no worktree
+   binding at all (Codex/OpenCode adapters, which operate directly on the live
+   checkout and don't create a worktree today) — it returns `True` ("unknown,"
+   not "no change"), preserving every existing caller's behavior exactly. A live
+   diff check was rejected after tracing through `FakeRuntime` and other test
+   doubles used across the existing scheduler test suite: none of them model a
+   real git repository or a real diff, so a universal "no signal means check the
+   live repo" fallback would have misclassified every one of them as
+   `succeeded-no-changes` — traced through analytically before writing any code,
+   not discovered by a failing test run. The safe default had to be "assume
+   changed" for missing data, not "assume unchanged." In
+   practice this isn't a live gap: `default_workspace()` already always requests
+   `kind: worktree`, so every task dispatched through the real CLI today has the
+   precise signal; only Codex/OpenCode (which don't implement worktree isolation
+   at all, a pre-existing gap independent of this plan) fall back to the
+   unknown/assume-changed default.
+2. **Resolved 2026-08-03, exactly as leaned:** `succeeded-no-changes` is a
+   distinct string from `succeeded`, so `escape_ai_cli.py`'s existing `return 0
+   if result["status"] == "succeeded" else 1` already returns 1 for it with zero
+   additional code — no change was needed at that call site.

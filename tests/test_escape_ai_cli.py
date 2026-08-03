@@ -142,6 +142,21 @@ class PlanningRenderingTests(unittest.TestCase):
         self.assertIn("repo-a:", rendered)
         self.assertIn("task.yaml", rendered)
         self.assertIn("Nothing has been committed", rendered)
+        self.assertNotIn("Dependency chain", rendered)
+
+    def test_render_plan_result_prints_dependency_chain_when_given(self):
+        """plan/done/run-outcome-surfacing.md finding #7: a multi-repo plan's
+        resolved chain should be visible in the apply output itself."""
+        result = {
+            "ampm-backend": [".esc-ai/workflows/active/task/task.yaml"],
+            "ampm-contracts": [".esc-ai/workflows/active/task/task.yaml"],
+        }
+        rendered = cli.render_plan_result(result, ["ampm-backend", "ampm-contracts", "ampm-kmp"])
+        self.assertIn("Dependency chain: ampm-backend -> ampm-contracts -> ampm-kmp", rendered)
+
+    def test_render_plan_result_omits_chain_line_when_none(self):
+        rendered = cli.render_plan_result({"repo-a": []}, None)
+        self.assertNotIn("Dependency chain", rendered)
 
 
 class NonInteractiveDispatchTests(unittest.TestCase):
@@ -2109,6 +2124,10 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             run(["plan", "answer", "feature-cross", str(answers_file)])
             code, out = run(["plan", "apply", "feature-cross"])
             self.assertEqual(0, code, out)
+            # plan/done/run-outcome-surfacing.md finding #7: the resolved chain is
+            # printed in the apply output itself, not just discoverable by reading
+            # task.yaml's depends_on by hand.
+            self.assertIn("Dependency chain: repo-a -> repo-b", out)
 
             # Parallel dispatch (headless-backdoor-mode.md follow-on): before anything
             # runs, only repo-a's task is ready -- repo-b's depends_on it.
@@ -2435,7 +2454,13 @@ class WorktreeCheckpointFlowTests(unittest.TestCase):
         self.assertEqual(0, code, out)
         return root, store, registry, repository_dir
 
-    def test_succeeded_run_with_no_diff_has_no_checkpoint_candidate(self):
+    def test_succeeded_run_with_no_diff_gets_no_changes_status_and_a_candidate(self):
+        """
+        plan/done/run-outcome-surfacing.md: a run that kept no worktree (no real
+        diff) must not be indistinguishable from a real completed run -- it gets
+        a distinct status and a synthesized, reviewable candidate instead of
+        checkpoint_candidate raising "no checkpoint candidate found."
+        """
         with TemporaryDirectory() as temp:
             root, store, registry, repository_dir = self._setup(temp)
             result = cli.execute_task(
@@ -2443,9 +2468,14 @@ class WorktreeCheckpointFlowTests(unittest.TestCase):
                 {"id": "claude", "route": "api-key"},
                 runtime=_FakeWorktreeSucceedingRuntime(root / "runs", repository_dir, leave_a_diff=False),
             )
-            self.assertEqual("succeeded", result["status"])
-            with self.assertRaises(ValueError):
-                cli.checkpoint_candidate(store, repository_dir, "feature-export")
+            self.assertEqual("succeeded-no-changes", result["status"])
+            candidate = cli.checkpoint_candidate(store, repository_dir, "feature-export")
+            self.assertTrue(candidate["no_changes"])
+            self.assertEqual("ready-to-resume", candidate["checkpoint"]["status"])
+            rendered = cli.render_checkpoint_candidate(candidate, repository_dir)
+            self.assertIn("produced no changes", rendered)
+            outcome = cli.promote_checkpoint(repository_dir, "feature-export", candidate)
+            self.assertIsNone(outcome)
 
     def test_succeeded_run_with_a_diff_produces_a_reviewable_candidate(self):
         with TemporaryDirectory() as temp:

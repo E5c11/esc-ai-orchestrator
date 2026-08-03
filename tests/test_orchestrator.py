@@ -23,7 +23,10 @@ from esc_orchestrator.store import Store
 
 
 class FakeRuntime:
-    def __init__(self, output_root: Path, verification_status: str | None = None, permission_denials: list | None = None):
+    def __init__(
+        self, output_root: Path, verification_status: str | None = None, permission_denials: list | None = None,
+        worktree_kept: bool | None = None,
+    ):
         """
         `verification_status`, when set, writes a `verification-result.json` the
         way a real `_AdapterRuntime` (via `execute_verification_plan`) would --
@@ -37,15 +40,29 @@ class FakeRuntime:
         other Claude Code permission check) blocked a tool call -- exercising
         layer 6's third checkpoint trigger (see
         plan/future/pre-flight-consent-and-bounded-autonomy.md).
+
+        `worktree_kept`, when set, writes a real `bindings.worktree.kept` the way
+        the worktree-isolated Claude Code adapter would (see
+        plan/done/run-outcome-surfacing.md) -- exercising Scheduler's
+        succeeded-no-changes wiring. Left unset by default so every existing test
+        keeps exercising the "no worktree binding at all" case, which must still
+        resolve to "succeeded" (see `_run_produced_changes`'s "unknown, not no
+        change" default).
         """
         self.output_root = output_root
         self.verification_status = verification_status
         self.permission_denials = permission_denials
+        self.worktree_kept = worktree_kept
 
     def execute(self, contracts):
         path = self.output_root / contracts["task"]["task"]["id"]
         path.mkdir(parents=True)
-        (path / "run.json").write_text("{}")
+        if self.worktree_kept is not None:
+            (path / "run.json").write_text(json.dumps({
+                "bindings": {"worktree": {"branch": "esc-ai-task-task-1", "kept": self.worktree_kept}},
+            }))
+        else:
+            (path / "run.json").write_text("{}")
         (path / "verification-summary.json").write_text(
             json.dumps({"schema_version": 1, "verification": {"status": "passed"}})
         )
@@ -380,6 +397,66 @@ class OrchestratorTests(unittest.TestCase):
 
             self.assertEqual("succeeded", store.get_task("task-1")["status"])
             self.assertEqual("succeeded", store.get_task("task-b")["status"])
+            scheduler.close()
+
+    def test_no_op_run_gets_succeeded_no_changes_status(self):
+        """
+        plan/done/run-outcome-surfacing.md finding #9: a run whose worktree was
+        never kept (no real diff) must not be stamped "succeeded" -- that status
+        means real completed work everywhere else in this codebase.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            scheduler = Scheduler(store, FakeRuntime(root / "runs", worktree_kept=False), registry)
+            task_id, run_id = scheduler.submit(contracts())
+            scheduler.queue.join()
+
+            self.assertEqual("succeeded-no-changes", store.get_run(run_id)["status"])
+            self.assertEqual("succeeded-no-changes", store.get_task(task_id)["status"])
+            scheduler.close()
+
+    def test_kept_worktree_still_gets_ordinary_succeeded_status(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            scheduler = Scheduler(store, FakeRuntime(root / "runs", worktree_kept=True), registry)
+            task_id, run_id = scheduler.submit(contracts())
+            scheduler.queue.join()
+
+            self.assertEqual("succeeded", store.get_run(run_id)["status"])
+            scheduler.close()
+
+    def test_no_op_run_does_not_auto_advance_dependent_task(self):
+        """
+        The correctness half of finding #9: a no-op run must never unblock a
+        dependent task whose depends_on assumed real work had landed.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            self._write_task_yaml(repository_dir, "task-b", {"id": "feature-x", "depends_on": ["repo/task-1"]})
+
+            scheduler = Scheduler(store, FakeRuntime(root / "runs", worktree_kept=False), registry)
+            task_a_contracts = contracts()
+            task_a_contracts["task"]["task"]["initiative"] = {"id": "feature-x"}
+            scheduler.submit(task_a_contracts)
+            scheduler.queue.join()
+
+            self.assertEqual("succeeded-no-changes", store.get_task("task-1")["status"])
+            self.assertIsNone(store.get_task("task-b"))  # never submitted
             scheduler.close()
 
     def test_does_not_resubmit_a_task_with_existing_store_history(self):

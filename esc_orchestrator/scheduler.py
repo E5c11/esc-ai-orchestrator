@@ -51,6 +51,35 @@ def _verification_failure_summary(failures: list[str]) -> str:
     return "verification failed: " + ", ".join(failures)
 
 
+def _run_produced_changes(output: Path) -> bool:
+    """
+    Whether a succeeded run actually changed anything, per its own `run.json` --
+    see plan/done/run-outcome-surfacing.md finding #9: a run that wrote no code at
+    all (a research summary ending in a clarifying question, say) is otherwise
+    indistinguishable from a real completed implementation.
+
+    `bindings.worktree.kept` (written by the worktree-isolated Claude Code
+    adapter -- `esc_exec.worktree.finalize_worktree`'s return value) is the
+    precise signal when present: a worktree is kept only when it has real commits
+    ahead of the base branch. Absence of that signal -- no `run.json` at all
+    (some test doubles), or a real run.json with no `worktree` binding at all
+    (Codex/OpenCode, which don't create a worktree and operate on the live
+    checkout directly) -- means "unknown," not "no change." Defaults to True so
+    every run without the signal keeps today's unconditional-success behavior
+    exactly as it was before this check existed, rather than guessing from a live
+    `git diff` that would misclassify synthetic/test repositories with no real git
+    history.
+    """
+    path = output / "run.json"
+    if not path.is_file():
+        return True
+    run_document = json.loads(path.read_text(encoding="utf-8"))
+    worktree = run_document.get("bindings", {}).get("worktree")
+    if worktree is None:
+        return True
+    return bool(worktree.get("kept"))
+
+
 def _permission_denials(output: Path) -> list[dict[str, Any]] | None:
     """
     Reads the `permission-denials.json` a ClaudeCodeAdapter run writes -- see
@@ -146,6 +175,15 @@ class Scheduler:
                     self.store.update_run(
                         run_id, "waiting-approval", str(output), _permission_denial_summary(blockers)
                     )
+                elif not _run_produced_changes(output):
+                    # A no-op "success" must never look like real completed work
+                    # (see plan/done/run-outcome-surfacing.md finding #9) -- a
+                    # distinct status, not a repurposed "succeeded", so every
+                    # existing `status == "succeeded"` check elsewhere keeps
+                    # meaning "real completed work." Never advances: nothing
+                    # should unblock a dependent task on a run that changed
+                    # nothing.
+                    self.store.update_run(run_id, "succeeded-no-changes", str(output))
                 else:
                     self.store.update_run(run_id, "succeeded", str(output))
                     # Best-effort: a bug in advancement must never retroactively turn

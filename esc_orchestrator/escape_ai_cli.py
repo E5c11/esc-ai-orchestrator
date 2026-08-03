@@ -218,11 +218,19 @@ def render_plan_draft(draft: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_plan_result(result: dict[str, Any]) -> str:
+def render_plan_result(result: dict[str, Any], dependency_chain: list[str] | None = None) -> str:
+    """
+    `dependency_chain` (plan/done/run-outcome-surfacing.md finding #7) is the
+    resolved repository order `apply_plan` already locked into each task's
+    `depends_on`, printed explicitly instead of only being visible by reading
+    `task.yaml` by hand. None for a single-repository plan, where no chain exists.
+    """
     lines = ["Planned. Files written:"]
     for repository_id, paths in result.items():
         lines.append(f"  {repository_id}:")
         lines += [f"    {path}" for path in paths]
+    if dependency_chain:
+        lines += ["", f"Dependency chain: {' -> '.join(dependency_chain)}"]
     lines += ["", "Nothing has been committed. Review the files above, then commit them yourself."]
     return "\n".join(lines)
 
@@ -698,6 +706,12 @@ def checkpoint_candidate(store: Store, repository_path: Path, task_id: str) -> d
     layer 4), it still needs the same review-before-merge step, so one is
     synthesized here rather than requiring `promote-checkpoint` to grow a
     second, parallel command just to reach the same merge step.
+
+    A `succeeded-no-changes` run (see plan/done/run-outcome-surfacing.md) gets
+    the same synthesized-candidate treatment for the opposite reason: there's no
+    worktree diff to merge, but a human still needs a clear "here's why this
+    needs attention" surface instead of `promote-checkpoint` just raising "no
+    checkpoint candidate found."
     """
     run = store.get_latest_run_for_task(task_id)
     if run is None or not run.get("output_path"):
@@ -705,12 +719,12 @@ def checkpoint_candidate(store: Store, repository_path: Path, task_id: str) -> d
     candidate_path = Path(run["output_path"]) / "checkpoint.yaml"
     if candidate_path.is_file():
         return {"run_id": run["id"], **load_yaml(candidate_path)}
+    task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
+    objective = load_yaml(task_path)["task"]["objective"] if task_path.is_file() else task_id
     if run["status"] == "succeeded":
         run_document = store.output_document(run["id"], "run.json")
         worktree = (run_document or {}).get("bindings", {}).get("worktree")
         if worktree and worktree.get("kept"):
-            task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
-            objective = load_yaml(task_path)["task"]["objective"] if task_path.is_file() else task_id
             return {
                 "run_id": run["id"], "worktree_merge_only": True,
                 "checkpoint": {"id": f"checkpoint-{task_id}", "task_id": task_id, "status": "ready-to-resume", "objective": objective},
@@ -720,6 +734,20 @@ def checkpoint_candidate(store: Store, repository_path: Path, task_id: str) -> d
                     "blockers": [], "artifacts": [],
                 },
             }
+    if run["status"] == "succeeded-no-changes":
+        return {
+            "run_id": run["id"], "no_changes": True,
+            "checkpoint": {"id": f"checkpoint-{task_id}", "task_id": task_id, "status": "ready-to-resume", "objective": objective},
+            "progress": {
+                "completed": [], "decisions": [],
+                "remaining": [
+                    "This run produced no changes and may need clarification or a different "
+                    "approach -- review the run's own summary/artifact before deciding whether "
+                    "to retry.",
+                ],
+                "blockers": [], "artifacts": [],
+            },
+        }
     raise ValueError(f"no checkpoint candidate found for `{task_id}`")
 
 
@@ -740,9 +768,17 @@ def promote_checkpoint(repository_path: Path, task_id: str, candidate: dict[str,
     edits -- merging those needs a human decision this function doesn't make
     for them. That worktree stays in place for manual inspection
     (`esc_exec.worktree.merge_worktree`/`remove_worktree` directly) until a
-    dedicated resolution verb exists (see that plan doc's open question 5)."""
+    dedicated resolution verb exists (see that plan doc's open question 5).
+
+    `candidate["no_changes"]` (set only by checkpoint_candidate's synthesized
+    succeeded-no-changes case) is the same "nothing to persist" shape as
+    worktree_merge_only, just with nothing to merge either -- there's no
+    worktree and no durable blocker, only a human having read the notice above.
+    Returns None the same way."""
     if candidate.get("worktree_merge_only"):
         merge_worktree(repository_path, task_id)
+        return None
+    if candidate.get("no_changes"):
         return None
     checkpoint, progress = candidate["checkpoint"], candidate["progress"]
     task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
@@ -785,7 +821,7 @@ def draft_plan(store: Store, registry: Path, initiative_id: str, work_type: str,
 def apply_plan(
     store: Store, registry: Path, initiative_id: str, answers: dict[str, Any],
     local_architecture_notes_by_repo: dict[str, list[str]] | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[str] | None]:
     """
     A single-repository plan writes one task directly; a multi-repository plan
     chains each repository's task to the previous one in the declared order (the
@@ -798,6 +834,15 @@ def apply_plan(
     offer_local_architecture_note_interactive) is keyed by repository_id, same
     shape as answers["components"] -- omitted entirely for the non-interactive
     CLI path, which never runs that check.
+
+    Returns `(result, dependency_chain)` -- `dependency_chain` (plan/done/
+    run-outcome-surfacing.md finding #7) is the same `repositories` order this
+    function already locks into each task's `depends_on`, surfaced explicitly so
+    `render_plan_result` can print it instead of leaving it only discoverable by
+    reading `task.yaml`. None for a single-repository plan. `result` itself is
+    unchanged in shape -- only `store.save_plan_result` persists it, and that
+    call site doesn't need the chain, which is fully re-derivable from the
+    written task.yaml files at any time.
     """
     draft = store.get_plan_draft(initiative_id)
     if draft is None:
@@ -818,6 +863,7 @@ def apply_plan(
             local_architecture_notes=notes_by_repo.get(repository_id),
         )
         result = {repository_id: [str(path.relative_to(repository_path)) for path in written]}
+        dependency_chain = None
     else:
         tasks: dict[str, Any] = {}
         previous_task_ref: str | None = None
@@ -841,9 +887,10 @@ def apply_plan(
         for repository_id, paths in written_paths.items():
             _, repository_path = resolve_repository(repository_id, registry)
             result[repository_id] = [str(path.relative_to(repository_path)) for path in paths]
+        dependency_chain = list(repositories)
 
     store.save_plan_result(initiative_id, answers, result)
-    return result
+    return result, dependency_chain
 
 
 # ---------------------------------------------------------------------------
@@ -1720,11 +1767,11 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
         return 0
 
     try:
-        result = apply_plan(store, registry, initiative_id, answers, local_architecture_notes_by_repo)
+        result, dependency_chain = apply_plan(store, registry, initiative_id, answers, local_architecture_notes_by_repo)
     except (OSError, ValueError) as exc:
         print(f"Apply failed: {exc}")
         return 1
-    print(render_plan_result(result))
+    print(render_plan_result(result, dependency_chain))
     return 0
 
 
@@ -2019,11 +2066,11 @@ def _dispatch_plan(args: argparse.Namespace, store: Store, registry: Path) -> in
             print(f"INCOMPLETE no pending answers for `{args.initiative_id}`; run `escape-ai plan answer` first.")
             return 2
         try:
-            result = apply_plan(store, registry, args.initiative_id, pending["answers"])
+            result, dependency_chain = apply_plan(store, registry, args.initiative_id, pending["answers"])
         except (OSError, ValueError, KeyError, FileNotFoundError) as exc:
             print(f"INVALID    {exc}")
             return 1
-        print(render_plan_result(result))
+        print(render_plan_result(result, dependency_chain))
         return 0
 
     if args.plan_command == "status":

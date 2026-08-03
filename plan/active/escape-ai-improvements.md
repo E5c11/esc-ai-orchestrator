@@ -15,7 +15,8 @@ itself. Where each finding landed:
 - **#7** (dependency chain not printed) and **#9** (a no-op "succeeded" run is
   indistinguishable from a real one — also found to silently auto-advance dependent
   tasks, worse than originally described) →
-  [`run-outcome-surfacing.md`](../future/run-outcome-surfacing.md)
+  [`run-outcome-surfacing.md`](../done/run-outcome-surfacing.md) (**implemented**
+  2026-08-03)
 - **#8**'s underlying `ampm-backend` bug (eager, non-conditional credential-backed
   bean crashing full-context tests) is a real issue in that repository, not
   escape-ai's — flagged back to it separately, not part of any escape-ai plan.
