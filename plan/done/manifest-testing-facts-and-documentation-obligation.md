@@ -274,7 +274,11 @@ Two changes:
   JUnit one (`contracts.py` already reserves `artifact.kind: coverage`, but nothing
   produces one today). Declaring the facts is this plan's whole scope; consuming them
   for gate generation is a follow-on plan once this schema is real and populated on at
-  least one onboarded repository.
+  least one onboarded repository. **The coverage half of this shipped** —
+  see `coverage-threshold-enforcement.md` (implemented 2026-08-03): a real coverage
+  check, threshold enforcement, and a summarizer covering both Kover and JaCoCo (they
+  share the same XML schema). Lint-check generation from `testing.*.lint_tools` is
+  still unbuilt.
 - Enforcing that `documentation` was *actually* updated (e.g., failing verification if a
   task's diff touches source but not `wiki/`). The instruction-bundle line makes the
   obligation explicit and standing; checking compliance mechanically is a much harder,
