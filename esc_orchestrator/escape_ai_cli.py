@@ -26,7 +26,7 @@ from esc_exec.indexing import validate_indexes
 from esc_exec.local_architecture import write_local_architecture_note
 from esc_exec.manifests import component_manifest_path, overall_exit_code, repository_manifest_path, validate_repository
 from esc_exec.measurement import process_metrics
-from esc_exec.model import ValidationResult
+from esc_exec.model import ManifestState, ValidationResult
 from esc_exec.onboarding import ARCHITECTURE_FRAMEWORK_ID, analyze_repository, apply_onboarding_answers
 from esc_exec.planning import (
     WORK_TYPES, architecture_doc_ids_for_components, generate_multi_repository_workflow,
@@ -54,12 +54,6 @@ MENU = [
     "Configure system",
     "Validate the system",
 ]
-
-NOT_YET_IMPLEMENTED = (
-    "Not yet implemented -- this is a later phase of the Escape AI plan "
-    "(see plan/active/cohesive-system-integration-and-onboarding.md). Only repository "
-    "onboarding, planning new work, and resuming active work are wired up so far."
-)
 
 # plan/active/form-driven-planning-conversation.md -- only ever offered for
 # single-repository plans (a form converging on one work_type/scope_boundary
@@ -199,6 +193,40 @@ def render_validation(results: list[ValidationResult]) -> str:
     return "\n".join(lines)
 
 
+def render_system_validation(results: dict[str, list[ValidationResult] | str]) -> str:
+    if not results:
+        return "No registered repositories to validate."
+    lines = []
+    valid_count = 0
+    for repository_id, value in results.items():
+        if isinstance(value, str):
+            lines.append(f"INVALID    {repository_id}: {value}")
+            continue
+        lines.append(f"{repository_id}:")
+        lines.append(render_validation(value))
+        if all(result.state == ManifestState.VALID for result in value):
+            valid_count += 1
+    lines += ["", f"{valid_count}/{len(results)} repositories fully valid."]
+    return "\n".join(lines)
+
+
+def render_provider_status(provider: dict[str, Any] | None) -> str:
+    return f"Active provider: {provider['id']} ({provider['route']})" if provider else "No provider connected yet."
+
+
+def render_repository_list(repository_ids: list[str], registry: Path) -> str:
+    if not repository_ids:
+        return "No repositories registered yet."
+    lines = ["Registered repositories:"]
+    for repository_id in repository_ids:
+        try:
+            path = resolve_route(registry, "repositories", repository_id)
+            lines.append(f"  {repository_id} -> {path}")
+        except (KeyError, FileNotFoundError) as exc:
+            lines.append(f"  {repository_id} -> UNRESOLVABLE ({exc})")
+    return "\n".join(lines)
+
+
 def render_work_types() -> str:
     return "Work type:"
 
@@ -324,6 +352,34 @@ def render_checkpoint_candidate(candidate: dict[str, Any], repository_path: Path
     return "\n".join(lines)
 
 
+def render_run_detail(
+    repository_id: str, task_id: str, detail: dict[str, Any], repository_path: Path | None = None,
+) -> str:
+    run = detail["run"]
+    if run is None:
+        return f"No runs yet for `{repository_id}/{task_id}`."
+    lines = [
+        f"{repository_id}/{task_id} -- run {run['id']}: {run['status']}",
+        f"created {run['created_at']}, updated {run['updated_at']}",
+    ]
+    if run.get("error"):
+        lines.append(f"Error: {run['error']}")
+    if run.get("output_path"):
+        lines.append(f"Output path: {run['output_path']}")
+
+    lines += ["", "Events:"]
+    events = detail["events"]
+    lines += [f"  {event['sequence']}. {event['created_at']} {event['type']}" for event in events] if events else ["  (none)"]
+
+    if detail["summary"] is not None:
+        lines += ["", "Verification summary:", json.dumps(detail["summary"], indent=2)]
+
+    if detail["checkpoint"] is not None:
+        lines += ["", render_checkpoint_candidate(detail["checkpoint"], repository_path)]
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Operations -- delegate to esc_exec/Store only, no prompts/printing. These are
 # what the end-to-end test exercises against a real repository.
@@ -418,6 +474,30 @@ def validate_all(repository_path: Path, registry: Path) -> list[ValidationResult
     results = list(validate_repository(repository_path, registry))
     results += validate_indexes(repository_path)
     results.append(validate_dependency_graph(repository_path))
+    return results
+
+
+def registered_repository_ids(registry: Path) -> list[str]:
+    return sorted(read_registry(registry).get("repositories", {}))
+
+
+def validate_system(registry: Path) -> dict[str, list[ValidationResult] | str]:
+    """
+    `validate_all` for every registered repository, keyed by repository ID -- the
+    "Validate the system" menu item, which `repository validate <id>` (the existing
+    per-repository command) has no equivalent of. A repository whose registered path
+    no longer resolves (moved/deleted since registration) reports as a plain error
+    string instead of raising -- one stale registration must not hide every other
+    repository's real validation result.
+    """
+    results: dict[str, list[ValidationResult] | str] = {}
+    for repository_id in registered_repository_ids(registry):
+        try:
+            repository_path = resolve_route(registry, "repositories", repository_id)
+        except (KeyError, FileNotFoundError) as exc:
+            results[repository_id] = str(exc)
+            continue
+        results[repository_id] = validate_all(repository_path, registry)
     return results
 
 
@@ -658,6 +738,33 @@ def prior_consent(store: Store, task_id: str) -> dict[str, Any] | None:
     if not run_document:
         return None
     return run_document.get("bindings", {}).get("consent")
+
+
+def run_detail(store: Store, task_id: str) -> dict[str, Any]:
+    """
+    "Observe a run" -- a read-only drill-down over a task's latest recorded run,
+    for the "Observe a run" menu item. Every value read here already exists in
+    `Store` and is already exposed once, over HTTP, by `api.py`'s `GET /runs/<id>`
+    family; this just surfaces the same reads through `escape-ai` directly, since
+    `execute_task` runs synchronously (the run named is always already finished by
+    the time this is callable -- there is nothing to tail live here, only to
+    review after the fact).
+
+    `checkpoint`, when present, is wrapped with a top-level `run_id` the same way
+    `checkpoint_candidate` already does, so `render_checkpoint_candidate` (built
+    for `promote-checkpoint`) can be reused verbatim rather than duplicated.
+    """
+    run = store.get_latest_run_for_task(task_id)
+    if run is None:
+        return {"run": None, "events": [], "summary": None, "checkpoint": None}
+    checkpoint_document = store.output_yaml(run["id"], "checkpoint.yaml")
+    checkpoint = {"run_id": run["id"], **checkpoint_document} if checkpoint_document else None
+    return {
+        "run": run,
+        "events": store.events(run["id"]),
+        "summary": store.summary(run["id"]),
+        "checkpoint": checkpoint,
+    }
 
 
 def _task_id_suggestions(repository_path: Path, task_id: str) -> list[str]:
@@ -1102,8 +1209,12 @@ def run_interactive(store: Store, registry: Path) -> int:
             run_planning_interactive(store, registry)
         elif choice == 2:
             run_resume_interactive(store, registry)
-        else:
-            print(NOT_YET_IMPLEMENTED)
+        elif choice == 3:
+            run_observe_interactive(store, registry)
+        elif choice == 4:
+            run_configure_interactive(registry)
+        elif choice == 5:
+            print(render_system_validation(validate_system(registry)))
 
 
 def suggest_answers_via_provider(
@@ -1799,16 +1910,15 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
     return 0
 
 
-def prompt_provider_setup_interactive(registry: Path) -> dict[str, Any] | None:
+def _pick_and_connect_provider_interactive(registry: Path) -> dict[str, Any] | None:
     """
-    Lazy, triggered-by-first-use only -- called from run_resume_interactive's
-    "Execute now" action when no provider is connected yet, never at first-run/menu
-    display. Returns None (nothing written) on any cancel, decline, or invalid choice.
+    Shared provider-picker/connector core -- pick a provider, pick a route (if
+    subscription-capable), connect it. Returns None on any cancel/decline/invalid
+    choice or a failed connection attempt. Callers own their own leading copy/confirm
+    question: the lazy first-use prompt (`prompt_provider_setup_interactive`) and
+    "Configure system"'s explicit connect/switch action
+    (`configure_provider_interactive`) have different framing for the same mechanics.
     """
-    print("No AI provider connected yet.")
-    if not confirm("Connect one now?"):
-        return None
-
     provider_choice = select_menu("Providers:", list(KNOWN_PROVIDERS))
     if provider_choice is None:
         return None
@@ -1840,10 +1950,71 @@ def prompt_provider_setup_interactive(registry: Path) -> dict[str, Any] | None:
     return provider
 
 
+def prompt_provider_setup_interactive(registry: Path) -> dict[str, Any] | None:
+    """
+    Lazy, triggered-by-first-use only -- called from run_resume_interactive's
+    "Execute now" action when no provider is connected yet, never at first-run/menu
+    display. Returns None (nothing written) on any cancel, decline, or invalid choice.
+    """
+    print("No AI provider connected yet.")
+    if not confirm("Connect one now?"):
+        return None
+    return _pick_and_connect_provider_interactive(registry)
+
+
+def configure_provider_interactive(registry: Path) -> None:
+    """
+    "Configure system" -> "Connect / switch provider" -- unlike the lazy first-use
+    prompt above, this is reachable whether or not a provider is already connected,
+    so it leads with the current status rather than assuming none exists.
+    """
+    current = active_provider(registry)
+    print(render_provider_status(current))
+    if not confirm("Connect a different provider?" if current else "Connect a provider now?"):
+        return
+    _pick_and_connect_provider_interactive(registry)
+
+
+def run_configure_interactive(registry: Path) -> int:
+    while True:
+        choice = select_menu(
+            "Configure system:",
+            ["Show current provider", "Connect / switch provider", "List registered repositories", "Back"],
+        )
+        if choice is None or choice == 3:
+            return 0
+        if choice == 0:
+            print(render_provider_status(active_provider(registry)))
+        elif choice == 1:
+            configure_provider_interactive(registry)
+        elif choice == 2:
+            print(render_repository_list(registered_repository_ids(registry), registry))
+
+
 def _resume_item_label(item: dict[str, Any]) -> str:
     status = item["latest_run_status"] or "never run"
     checkpoint = " [checkpoint pending]" if item["checkpoint_present"] else ""
     return f"{item['repository_id']}/{item['task_id']} -- {status}, {item['attempts']} attempt(s){checkpoint} -- {item['objective']}"
+
+
+def run_observe_interactive(store: Store, registry: Path) -> int:
+    """
+    "Observe a run" -- a task picker (reusing `active_work`, same as "Resume active
+    work") followed by a read-only drill-down over that task's latest recorded run
+    (see `run_detail`'s docstring for why this is a post-hoc view, not a live tail).
+    """
+    items = active_work(store, registry)
+    if not items:
+        print(render_active_work(items))
+        return 0
+    choice = select_menu("Observe a run -- select a task:", [_resume_item_label(item) for item in items])
+    if choice is None:
+        return 0
+    selected = items[choice]
+    repository_id, task_id = selected["repository_id"], selected["task_id"]
+    _, repository_path = resolve_repository(repository_id, registry)
+    print(render_run_detail(repository_id, task_id, run_detail(store, task_id), repository_path))
+    return 0
 
 
 def run_resume_interactive(store: Store, registry: Path) -> int:
@@ -1859,7 +2030,10 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
     repository_id, task_id = selected["repository_id"], selected["task_id"]
     _, repository_path = resolve_repository(repository_id, registry)
 
-    action_choice = select_menu(f"{repository_id}/{task_id} -- choose an action:", ["Execute now", "Promote checkpoint candidate"])
+    action_choice = select_menu(
+        f"{repository_id}/{task_id} -- choose an action:",
+        ["Execute now", "Promote checkpoint candidate", "Observe latest run"],
+    )
     if action_choice is None:
         return 0
 
@@ -1871,6 +2045,18 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
                 print("Cancelled -- no provider connected.")
                 return 0
         task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
+        # Cheap, no-dispatch pre-flight (see plan/done/pre-flight-doctor-and-gate-
+        # prerequisites.md and plan/active/interactive-menu-completeness.md design
+        # 5) -- the same check `task doctor`/`task run`'s automatic gate already
+        # run, surfaced here too so the guided path doesn't burn a real dispatch
+        # attempt on a gap this would have caught for free. Non-blocking, same as
+        # `task run`: a blocker is shown, not enforced -- `--yes`/this confirm
+        # remains the actual gate.
+        blockers = doctor_check(repository_path, task_path, registry)
+        if blockers:
+            print(f"BLOCKED    {len(blockers)} pre-flight issue(s) found; a real dispatch would likely fail before this task even starts:")
+            for blocker in blockers:
+                print(f"  - {blocker}")
         print(render_execution_preview(
             repository_id, task_id, load_yaml(task_path), provider,
             default_policy(), prior_consent(store, task_id),
@@ -1894,6 +2080,10 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
             return 0
         path = promote_checkpoint(repository_path, task_id, candidate)
         print(f"Merged worktree back; no checkpoint to record." if path is None else f"Promoted checkpoint to {path}")
+        return 0
+
+    if action_choice == 2:
+        print(render_run_detail(repository_id, task_id, run_detail(store, task_id), repository_path))
         return 0
 
     return 0

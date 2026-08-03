@@ -1,7 +1,20 @@
 # Interactive Menu Completeness and Run Observability — Plan
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-08-03
+**Implemented:** 2026-08-03 — all five designs shipped and tested in
+esc-ai-orchestrator (the only repo this plan touches): `registered_repository_ids`,
+`validate_system`/`render_system_validation` wired to menu choice 5;
+`run_configure_interactive`/`configure_provider_interactive`/`render_provider_status`/
+`render_repository_list` wired to menu choice 4 (provider connect/switch reuses a new
+shared `_pick_and_connect_provider_interactive`, factored out of
+`prompt_provider_setup_interactive` rather than duplicated); `run_detail`/
+`render_run_detail` wired both as menu choice 3 (`run_observe_interactive`) and as a
+third `run_resume_interactive` action ("Observe latest run"); `doctor_check` folded
+into `run_resume_interactive`'s "Execute now" branch, non-blocking, silent when clean
+per open question 2's resolution below. The now-fully-wired `MENU`'s dead
+`NOT_YET_IMPLEMENTED` fallback branch and constant were removed. 21 new tests added
+(`tests/test_escape_ai_cli.py`); full suite (208 tests) green.
 **Objective:** Close the gap between what `escape-ai`'s boot-time interactive menu
 advertises and what it actually does. Three of the six top-level menu items
 (`Observe a run`, `Configure system`, `Validate the system`) print
@@ -204,14 +217,14 @@ shown, not enforced as a hard stop — the user can still choose to proceed (mir
 
 ## Open questions
 
-1. Should "Observe a run" (design 4) let a user pick *which* run for a task (attempt
-   history), or only ever the latest one? `Store` has `get_latest_run_for_task` but
-   no "all runs for this task_id" query today — leaning toward latest-only for the
-   first cut (matches `prior_consent`'s existing precedent of only ever consulting
-   the latest run), extending to full history only if attempt-by-attempt comparison
-   turns out to matter in practice.
-2. Should design 5's doctor pre-flight be skippable (e.g. a "skip check" option) for
-   a user who's already fixed a known-cosmetic blocker and doesn't want to re-run the
-   check every time? Leaning toward no for the first cut — `doctor_check` is cheap
-   (no dispatch, local-only checks), so re-running it every time costs nothing real,
-   unlike the metered dispatch it's meant to protect.
+1. **Resolved 2026-08-03, shipped as leaned:** "Observe a run" (`run_detail`) only
+   ever consults `get_latest_run_for_task` — no attempt-history picker was added.
+   Matches `prior_consent`'s existing precedent. Extend to full history only if
+   attempt-by-attempt comparison turns out to matter in practice.
+2. **Resolved 2026-08-03, shipped as leaned:** design 5's doctor pre-flight is not
+   skippable, and is also silent (prints nothing) when clean rather than printing an
+   explicit "CLEAN" line every time — `doctor_check` is cheap, so unconditionally
+   re-running it costs nothing real, but an all-clear line on every single "Execute
+   now" turned out to be pure noise once actually written (confirmed while writing
+   `test_execute_now_on_a_clean_task_prints_no_preflight_noise`); it only prints when
+   it actually finds something to report.

@@ -481,7 +481,7 @@ class TopLevelMenuLoopTests(unittest.TestCase):
             responses = iter([
                 "1",                              # Onboard a repository
                 str(root / "does-not-exist-yet"),  # triggers the scaffold-wizard dead end
-                "5",                               # Configure system -- not yet implemented
+                "6",                               # Validate the system -- nothing registered yet
                 "",                                # blank -> back out of the menu
             ])
             original_input = builtins.input
@@ -496,7 +496,7 @@ class TopLevelMenuLoopTests(unittest.TestCase):
             self.assertEqual(0, code)
             output = buffer.getvalue()
             self.assertIn("Nothing found at", output)
-            self.assertIn(cli.NOT_YET_IMPLEMENTED, output)
+            self.assertIn("No registered repositories to validate.", output)
             self.assertEqual(3, output.count("What would you like to do?"))
 
 
@@ -2819,6 +2819,367 @@ class PriorConsentTests(unittest.TestCase):
                 "repo", "feature-export", task_document, None, cli.default_policy(), recorded,
             )
             self.assertIn("already consented on 2026-07-24T00:00:00Z", rendered)
+
+
+def _onboard_and_plan_single_repository(db: Path, registry: Path, repository_dir: Path) -> None:
+    """Shared bootstrap for the interactive-menu-completeness tests below: onboard
+    one Gradle repository and plan+apply a single-repository task named
+    `feature-export`, exactly as `test_execute_retry_promote_and_resume_view` does,
+    so `feature-export`'s task.yaml exists and can be dispatched."""
+    _make_gradle_repository(repository_dir)
+
+    def run(argv):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+        return code, buffer.getvalue()
+
+    run(["repository", "add", "repo", str(repository_dir)])
+    run(["repository", "analyze", "repo", "--json"])
+    answers_file = db.parent / "answers.json"
+    answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+    run(["repository", "answer", "repo", str(answers_file)])
+    run(["repository", "apply", "repo"])
+    request_file = db.parent / "request.json"
+    request_file.write_text(json.dumps({
+        "work_type": "feature", "objective": "Add CSV export.", "repositories": ["repo"],
+    }), encoding="utf-8")
+    run(["plan", "draft", "feature-export", str(request_file)])
+    plan_answers_file = db.parent / "plan-answers.json"
+    plan_answers_file.write_text(json.dumps({
+        "components": {"repo": ["content"]}, "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+    }), encoding="utf-8")
+    run(["plan", "answer", "feature-export", str(plan_answers_file)])
+    run(["plan", "apply", "feature-export"])
+
+
+class RegisteredRepositoryIdsTests(unittest.TestCase):
+    def test_empty_registry_has_no_ids(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            self.assertEqual([], cli.registered_repository_ids(registry))
+
+    def test_returns_sorted_ids(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            (root / "z-repo").mkdir()
+            (root / "a-repo").mkdir()
+            cli.add_route(registry, "repositories", "z-repo", root / "z-repo")
+            cli.add_route(registry, "repositories", "a-repo", root / "a-repo")
+            self.assertEqual(["a-repo", "z-repo"], cli.registered_repository_ids(registry))
+
+
+class ValidateSystemTests(unittest.TestCase):
+    def test_no_registered_repositories_returns_empty(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            self.assertEqual({}, cli.validate_system(registry))
+            self.assertEqual("No registered repositories to validate.", cli.render_system_validation({}))
+
+    def test_unresolvable_repository_reports_as_a_string_not_a_crash(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            cli.add_route(registry, "repositories", "ghost", root / "does-not-exist")
+            results = cli.validate_system(registry)
+            self.assertIn("ghost", results)
+            self.assertIsInstance(results["ghost"], str)
+            rendered = cli.render_system_validation(results)
+            self.assertIn("INVALID    ghost:", rendered)
+            self.assertIn("0/1 repositories fully valid.", rendered)
+
+    def test_real_onboarded_repository_validates_clean(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _onboard_and_plan_single_repository(db, registry, repository_dir)
+
+            results = cli.validate_system(registry)
+            self.assertIn("repo", results)
+            self.assertTrue(all(result.state.value == "VALID" for result in results["repo"]))
+            rendered = cli.render_system_validation(results)
+            self.assertIn("1/1 repositories fully valid.", rendered)
+
+
+class ConfigureSystemRenderingTests(unittest.TestCase):
+    """Pure rendering, except render_repository_list which resolves routes against
+    a real registry file -- kept in its own test method rather than RenderingTests'
+    fake-data-only class."""
+
+    def test_render_provider_status_none(self):
+        self.assertEqual("No provider connected yet.", cli.render_provider_status(None))
+
+    def test_render_provider_status_connected(self):
+        rendered = cli.render_provider_status({"id": "claude", "route": "subscription"})
+        self.assertEqual("Active provider: claude (subscription)", rendered)
+
+    def test_render_repository_list_empty(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            self.assertEqual("No repositories registered yet.", cli.render_repository_list([], registry))
+
+    def test_render_repository_list_shows_resolved_path(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            (root / "repo").mkdir()
+            cli.add_route(registry, "repositories", "repo", root / "repo")
+            rendered = cli.render_repository_list(["repo"], registry)
+            self.assertIn("repo ->", rendered)
+            self.assertIn(str((root / "repo").resolve()), rendered)
+
+    def test_render_repository_list_flags_unresolvable_route(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            cli.add_route(registry, "repositories", "ghost", root / "does-not-exist")
+            rendered = cli.render_repository_list(["ghost"], registry)
+            self.assertIn("ghost -> UNRESOLVABLE", rendered)
+
+
+class RunDetailTests(unittest.TestCase):
+    def test_no_runs_yet(self):
+        with TemporaryDirectory() as temp:
+            store = Store(Path(temp) / "db.sqlite")
+            detail = cli.run_detail(store, "never-run")
+            self.assertIsNone(detail["run"])
+            self.assertEqual([], detail["events"])
+            self.assertIsNone(detail["summary"])
+            self.assertIsNone(detail["checkpoint"])
+            self.assertEqual(
+                "No runs yet for `repo/never-run`.",
+                cli.render_run_detail("repo", "never-run", detail),
+            )
+
+    def test_succeeded_run_shows_status_and_events_no_checkpoint(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _onboard_and_plan_single_repository(db, registry, repository_dir)
+            store = Store(db)
+
+            cli.execute_task(
+                store, registry, "repo", repository_dir, "feature-export",
+                {"id": "claude", "route": "api-key"}, runtime=_FakeSucceedingRuntime(root / "runs"),
+            )
+
+            detail = cli.run_detail(store, "feature-export")
+            self.assertEqual("succeeded", detail["run"]["status"])
+            self.assertIsNone(detail["checkpoint"])
+            event_types = [event["type"] for event in detail["events"]]
+            self.assertEqual(["run.queued", "run.running", "run.succeeded"], event_types)
+
+            rendered = cli.render_run_detail("repo", "feature-export", detail)
+            self.assertIn("run.queued", rendered)
+            self.assertIn("run.running", rendered)
+            self.assertIn("run.succeeded", rendered)
+            self.assertIn("succeeded", rendered)
+
+    def test_failed_run_surfaces_the_checkpoint_candidate(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _onboard_and_plan_single_repository(db, registry, repository_dir)
+            store = Store(db)
+
+            cli.execute_task(
+                store, registry, "repo", repository_dir, "feature-export",
+                {"id": "claude", "route": "api-key"}, runtime=_FakeFailingRuntime(),
+            )
+
+            detail = cli.run_detail(store, "feature-export")
+            self.assertEqual("failed", detail["run"]["status"])
+            self.assertIsNotNone(detail["checkpoint"])
+
+            rendered = cli.render_run_detail("repo", "feature-export", detail)
+            self.assertIn("Checkpoint candidate from run", rendered)
+            self.assertIn("provider unavailable", rendered)
+
+
+class ConfigureSystemInteractiveTests(unittest.TestCase):
+    def test_shows_no_provider_and_no_repositories_then_backs_out(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            responses = iter(["1", "3", "4"])  # show provider, list repos, back
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_configure_interactive(registry)
+            finally:
+                builtins.input = original_input
+            self.assertEqual(0, code)
+            output = buffer.getvalue()
+            self.assertIn("No provider connected yet.", output)
+            self.assertIn("No repositories registered yet.", output)
+
+    def test_declining_to_connect_leaves_provider_unset(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            responses = iter(["2", "2", "4"])  # connect/switch -> decline -> back
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                cli.run_configure_interactive(registry)
+            finally:
+                builtins.input = original_input
+            self.assertIsNone(cli.active_provider(registry))
+
+    def test_can_connect_a_provider_from_the_submenu(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            # connect/switch -> confirm -> claude -> subscription -> back
+            responses = iter(["2", "1", "1", "1", "4"])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            original_available, original_status = cli.claude_cli_available, cli.claude_auth_status
+            cli.claude_cli_available = lambda binary="claude": True
+            cli.claude_auth_status = lambda binary="claude": {"loggedIn": True, "subscriptionType": "pro"}
+            try:
+                cli.run_configure_interactive(registry)
+            finally:
+                builtins.input = original_input
+                cli.claude_cli_available, cli.claude_auth_status = original_available, original_status
+            self.assertEqual({"id": "claude", "route": "subscription"}, cli.active_provider(registry))
+
+
+class ObserveRunInteractiveTests(unittest.TestCase):
+    def test_no_active_work_prints_the_empty_message(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = cli.run_observe_interactive(store, registry)
+            self.assertEqual(0, code)
+            self.assertIn("No active work found", buffer.getvalue())
+
+    def test_selecting_a_task_shows_its_run_detail(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _onboard_and_plan_single_repository(db, registry, repository_dir)
+            store = Store(db)
+            cli.execute_task(
+                store, registry, "repo", repository_dir, "feature-export",
+                {"id": "claude", "route": "api-key"}, runtime=_FakeSucceedingRuntime(root / "runs"),
+            )
+
+            original_input = builtins.input
+            builtins.input = lambda prompt="": "1"  # the only active-work item
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_observe_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+            self.assertEqual(0, code)
+            output = buffer.getvalue()
+            self.assertIn("repo/feature-export", output)
+            self.assertIn("succeeded", output)
+
+
+class ResumeInteractiveDoctorAndObserveTests(unittest.TestCase):
+    def test_execute_now_on_a_clean_task_prints_no_preflight_noise(self):
+        """A task with no declared prerequisites (doctor_check returns no
+        blockers) shouldn't get an extra "all clear" line on every single
+        "Execute now" -- the check is silent unless it actually finds something,
+        same as its own docstring's non-blocking framing."""
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _onboard_and_plan_single_repository(db, registry, repository_dir)
+            store = Store(db)
+            cli.set_provider(registry, "claude", "api-key")
+
+            # select the task -> Execute now -> decline the actual dispatch.
+            responses = iter(["1", "1", "2"])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_resume_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+            self.assertEqual(0, code)
+            output = buffer.getvalue()
+            self.assertNotIn("BLOCKED", output)
+            self.assertIn("About to execute", output)
+            self.assertIn("Cancelled -- nothing was executed.", output)
+
+    def test_execute_now_surfaces_a_real_doctor_blocker_before_dispatch(self):
+        """Mirrors test_task_doctor_reports_unsatisfied_prerequisite_without_
+        dispatching, but through the guided "Resume active work -> Execute now"
+        path instead of the standalone `task doctor` subcommand -- this is the
+        exact gap plan/active/interactive-menu-completeness.md design 5 closes:
+        the guided path used to go straight to the execution preview with no
+        pre-flight warning at all."""
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _onboard_and_plan_single_repository(db, registry, repository_dir)
+            store = Store(db)
+            cli.set_provider(registry, "claude", "api-key")
+
+            profile_path = repository_dir / ".esc-ai" / "components" / "content" / "esc-verification-profile.yaml"
+            profile = load_yaml(profile_path)
+            profile["gates"]["final"][0]["prerequisites"] = [
+                {"kind": "env", "name": "ESC_AI_TEST_CLI_MISSING_TOKEN_XYZ"},
+            ]
+            write_yaml(profile_path, profile)
+
+            # select the task -> Execute now -> decline the actual dispatch.
+            responses = iter(["1", "1", "2"])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_resume_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+            self.assertEqual(0, code)
+            output = buffer.getvalue()
+            self.assertIn("BLOCKED", output)
+            self.assertIn("ESC_AI_TEST_CLI_MISSING_TOKEN_XYZ", output)
+            self.assertIn("Cancelled -- nothing was executed.", output)
+
+    def test_observe_latest_run_action_shows_run_detail(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _onboard_and_plan_single_repository(db, registry, repository_dir)
+            store = Store(db)
+            cli.execute_task(
+                store, registry, "repo", repository_dir, "feature-export",
+                {"id": "claude", "route": "api-key"}, runtime=_FakeSucceedingRuntime(root / "runs"),
+            )
+
+            # select the task -> Observe latest run.
+            responses = iter(["1", "3"])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.run_resume_interactive(store, registry)
+            finally:
+                builtins.input = original_input
+            self.assertEqual(0, code)
+            output = buffer.getvalue()
+            self.assertIn("run", output)
+            self.assertIn("succeeded", output)
 
 
 class ProviderTests(unittest.TestCase):
