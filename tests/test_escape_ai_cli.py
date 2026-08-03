@@ -159,6 +159,39 @@ class PlanningRenderingTests(unittest.TestCase):
         self.assertNotIn("Dependency chain", rendered)
 
 
+class TaskIdSuggestionsTests(unittest.TestCase):
+    """plan/done/cli-discoverability.md finding #1: pure unit tests for the
+    shared suggestion helper, independent of any CLI dispatch."""
+
+    def test_suggests_prefix_matches(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            active = root / ".esc-ai" / "workflows" / "active"
+            (active / "feature-cross-repo-a").mkdir(parents=True)
+            (active / "feature-cross-repo-b").mkdir(parents=True)
+            (active / "unrelated-task").mkdir(parents=True)
+            self.assertEqual(
+                ["feature-cross-repo-a", "feature-cross-repo-b"],
+                cli._task_id_suggestions(root, "feature-cross"),
+            )
+
+    def test_no_suggestions_when_nothing_matches(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".esc-ai" / "workflows" / "active" / "other-task").mkdir(parents=True)
+            self.assertEqual([], cli._task_id_suggestions(root, "feature-cross"))
+
+    def test_no_suggestions_when_active_directory_is_missing(self):
+        with TemporaryDirectory() as temp:
+            self.assertEqual([], cli._task_id_suggestions(Path(temp), "feature-cross"))
+
+    def test_exact_match_is_excluded_from_its_own_suggestions(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".esc-ai" / "workflows" / "active" / "feature-cross").mkdir(parents=True)
+            self.assertEqual([], cli._task_id_suggestions(root, "feature-cross"))
+
+
 class NonInteractiveDispatchTests(unittest.TestCase):
     """End-to-end: real analyze_repository/apply_onboarding_answers against a real repo."""
 
@@ -315,6 +348,76 @@ class PlanningDispatchTests(unittest.TestCase):
             code, out = run(["plan", "status", "feature-export"])
             self.assertEqual(0, code)
             self.assertIn("has_result: True", out)
+
+    def test_plan_draft_json_prints_the_real_questions(self):
+        """
+        plan/done/cli-discoverability.md finding #2: `plan draft` only ever
+        printed a bare question count -- `--json` (mirroring `repository analyze
+        --json`) should print the real draft, including its questions array.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            self._onboard(run, "repo", repository_dir, "Owns content.")
+
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Add CSV export of content.",
+                "repositories": ["repo"],
+            }), encoding="utf-8")
+            code, out = run(["plan", "draft", "feature-export", str(request_file)])
+            self.assertEqual(0, code, out)
+            self.assertNotIn("{", out)  # plain render, not JSON, without --json
+
+            code, out = run(["plan", "draft", "feature-export", str(request_file), "--json"])
+            self.assertEqual(0, code, out)
+            document = json.loads(out)
+            self.assertEqual("feature-export", document["initiative_id"])
+            self.assertIsInstance(document["questions"], list)
+
+    def test_plan_status_json_includes_questions_array(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            self._onboard(run, "repo", repository_dir, "Owns content.")
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Add CSV export of content.",
+                "repositories": ["repo"],
+            }), encoding="utf-8")
+            run(["plan", "draft", "feature-export", str(request_file)])
+
+            code, out = run(["plan", "status", "feature-export", "--json"])
+            self.assertEqual(0, code, out)
+            document = json.loads(out)
+            self.assertTrue(document["has_draft"])
+            self.assertIsInstance(document["questions"], list)
+
+            code, out = run(["plan", "status", "does-not-exist", "--json"])
+            self.assertEqual(0, code, out)
+            document = json.loads(out)
+            self.assertFalse(document["has_draft"])
+            self.assertEqual([], document["questions"])
 
     def test_multi_repository_plan_cross_links_tasks(self):
         with TemporaryDirectory() as temp:
@@ -2338,6 +2441,77 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             code, out = run(["task", "doctor", "repo", "does-not-exist"])
             self.assertEqual(1, code)
             self.assertIn("INVALID", out)
+
+    def test_task_doctor_unknown_task_id_suggests_real_ones(self):
+        """
+        plan/done/cli-discoverability.md finding #1: the documented multi-repo
+        convention is `<initiative-id>-<repository-id>` -- a user who guesses
+        just the initiative ID should be told what the real task IDs are,
+        instead of a flat "not found".
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repo_a, repo_b = root / "repo-a", root / "repo-b"
+            _make_gradle_repository(repo_a)
+            _make_gradle_repository(repo_b)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            for repo_id, repository_dir in (("repo-a", repo_a), ("repo-b", repo_b)):
+                run(["repository", "add", repo_id, str(repository_dir)])
+                run(["repository", "analyze", repo_id, "--json"])
+                answers_file = root / f"{repo_id}-answers.json"
+                answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+                run(["repository", "answer", repo_id, str(answers_file)])
+                run(["repository", "apply", repo_id])
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Cross-repo export.",
+                "repositories": ["repo-a", "repo-b"],
+            }), encoding="utf-8")
+            run(["plan", "draft", "feature-cross", str(request_file)])
+            answers_file = root / "plan-answers.json"
+            answers_file.write_text(json.dumps({
+                "components": {"repo-a": ["content"], "repo-b": ["content"]},
+                "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+            }), encoding="utf-8")
+            run(["plan", "answer", "feature-cross", str(answers_file)])
+            run(["plan", "apply", "feature-cross"])
+
+            # A user guesses just the initiative ID, not knowing the real
+            # convention -- exactly the real dogfooding case.
+            code, out = run(["task", "doctor", "repo-a", "feature-cross"])
+            self.assertEqual(1, code)
+            self.assertIn("INVALID", out)
+            self.assertIn("did you mean: feature-cross-repo-a", out)
+
+            code, out = run(["task", "run", "repo-a", "feature-cross"])
+            self.assertEqual(1, code)
+            self.assertIn("did you mean: feature-cross-repo-a", out)
+
+    def test_task_doctor_unknown_task_id_with_no_candidates_has_no_suggestion(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            run(["repository", "add", "repo", str(repository_dir)])
+            code, out = run(["task", "doctor", "repo", "does-not-exist"])
+            self.assertEqual(1, code)
+            self.assertIn("INVALID", out)
+            self.assertNotIn("did you mean", out)
 
     def test_resume_json_output(self):
         with TemporaryDirectory() as temp:

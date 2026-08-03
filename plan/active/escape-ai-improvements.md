@@ -5,7 +5,8 @@ design doc; this log is kept as the original source material, not as open work
 itself. Where each finding landed:
 
 - **#1** (task-ID discoverability) and **#2** (`plan draft` questions not
-  inspectable) → [`cli-discoverability.md`](../future/cli-discoverability.md)
+  inspectable) → [`cli-discoverability.md`](../done/cli-discoverability.md)
+  (**implemented** 2026-08-03)
 - **#3** (no pre-flight environment check), **#4** (worktrees don't inherit
   gitignored config), **#5** (gates don't declare prerequisites), **#6** (failure
   categorization left to the human), and the scoped-verification half of **#8**

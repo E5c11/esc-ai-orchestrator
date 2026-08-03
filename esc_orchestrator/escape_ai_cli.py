@@ -660,6 +660,28 @@ def prior_consent(store: Store, task_id: str) -> dict[str, Any] | None:
     return run_document.get("bindings", {}).get("consent")
 
 
+def _task_id_suggestions(repository_path: Path, task_id: str) -> list[str]:
+    """
+    Sibling task IDs under `.esc-ai/workflows/active/` for `repository_path`
+    whose directory name starts with the given (likely wrong) `task_id` -- the
+    documented multi-repo convention is always `<initiative-id>-<repository-id>`,
+    so a plain prefix match against the initiative-id-only guess a user is
+    likely to type covers the real dogfooding case directly (see
+    plan/done/cli-discoverability.md finding #1). No fuzzy-matching library;
+    scoped to this one repository, not a cross-repository search (see that
+    plan's open question 1). Returns `[]` when the active workflows directory
+    doesn't exist or nothing matches, so callers fall back to their own plain
+    "not found" message unchanged.
+    """
+    active_dir = repository_path / ".esc-ai" / "workflows" / "active"
+    if not active_dir.is_dir():
+        return []
+    return sorted(
+        path.name for path in active_dir.iterdir()
+        if path.is_dir() and path.name != task_id and path.name.startswith(task_id)
+    )
+
+
 def execute_task(
     store: Store, registry: Path, repository_id: str, repository_path: Path, task_id: str, provider: dict[str, Any],
     runtime: Any = None, opencode_server: str = DEFAULT_OPENCODE_SERVER,
@@ -676,7 +698,9 @@ def execute_task(
     """
     task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
     if not task_path.is_file():
-        raise ValueError(f"no task.yaml found for `{task_id}` in `{repository_id}`; plan apply first")
+        suggestions = _task_id_suggestions(repository_path, task_id)
+        hint = f"did you mean: {', '.join(suggestions)}?" if suggestions else "plan apply first"
+        raise ValueError(f"no task.yaml found for `{task_id}` in `{repository_id}`; {hint}")
     contracts = {
         "task": load_yaml(task_path),
         "workspace": default_workspace(repository_id),
@@ -1910,13 +1934,16 @@ def build_parser() -> argparse.ArgumentParser:
     plan_draft = plan_commands.add_parser("draft")
     plan_draft.add_argument("initiative_id")
     plan_draft.add_argument("request_file", type=Path)
+    plan_draft.add_argument("--json", action="store_true")
 
     plan_answer = plan_commands.add_parser("answer")
     plan_answer.add_argument("initiative_id")
     plan_answer.add_argument("answers_file", type=Path)
 
     plan_commands.add_parser("apply").add_argument("initiative_id")
-    plan_commands.add_parser("status").add_argument("initiative_id")
+    plan_status = plan_commands.add_parser("status")
+    plan_status.add_argument("initiative_id")
+    plan_status.add_argument("--json", action="store_true")
     plan_commands.add_parser(
         "ready", help="List tasks in this initiative that are unblocked and never submitted",
     ).add_argument("initiative_id")
@@ -2051,7 +2078,7 @@ def _dispatch_plan(args: argparse.Namespace, store: Store, registry: Path) -> in
         except (OSError, ValueError, KeyError, FileNotFoundError) as exc:
             print(f"INVALID    {exc}")
             return 1
-        print(render_plan_draft(draft))
+        print(json.dumps(draft, indent=2) if args.json else render_plan_draft(draft))
         return 0
 
     if args.plan_command == "answer":
@@ -2077,13 +2104,17 @@ def _dispatch_plan(args: argparse.Namespace, store: Store, registry: Path) -> in
         draft = store.get_plan_draft(args.initiative_id)
         pending = store.get_plan_pending_answers(args.initiative_id)
         result = store.get_plan_result(args.initiative_id)
-        print(render_status({
+        info = {
             "initiative_id": args.initiative_id,
             "has_draft": draft is not None,
             "has_pending_answers": pending is not None,
             "has_result": result is not None,
             "process_metrics": planning_process_metrics(store, args.initiative_id),
-        }))
+        }
+        # --json also surfaces the real pending-question array (see
+        # plan/done/cli-discoverability.md finding #2) -- omitted from the plain
+        # render, which stays a compact summary.
+        print(json.dumps({**info, "questions": draft["questions"] if draft else []}, indent=2) if args.json else render_status(info))
         return 0
 
     if args.plan_command == "ready":
@@ -2101,6 +2132,9 @@ def _dispatch_task(args: argparse.Namespace, store: Store, registry: Path) -> in
             task_path = repository_path / ".esc-ai" / "workflows" / "active" / args.task_id / "task.yaml"
             if not task_path.is_file():
                 print(f"INVALID    no task.yaml found for `{args.task_id}` in `{repository_id}`")
+                suggestions = _task_id_suggestions(repository_path, args.task_id)
+                if suggestions:
+                    print(f"           did you mean: {', '.join(suggestions)}?")
                 return 1
             task_document = load_yaml(task_path)
         except (KeyError, FileNotFoundError) as exc:
@@ -2151,6 +2185,9 @@ def _dispatch_task(args: argparse.Namespace, store: Store, registry: Path) -> in
             task_path = repository_path / ".esc-ai" / "workflows" / "active" / args.task_id / "task.yaml"
             if not task_path.is_file():
                 print(f"INVALID    no task.yaml found for `{args.task_id}` in `{repository_id}`")
+                suggestions = _task_id_suggestions(repository_path, args.task_id)
+                if suggestions:
+                    print(f"           did you mean: {', '.join(suggestions)}?")
                 return 1
             blockers = doctor_check(repository_path, task_path, registry)
         except (KeyError, FileNotFoundError, ValueError) as exc:

@@ -1,11 +1,17 @@
 # CLI Discoverability: Task IDs and Pending Questions — Plan
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-08-03
+**Implemented:** 2026-08-03 — both designs shipped and tested in esc-ai-orchestrator
+(the only repo this plan touches): `_task_id_suggestions` shared across
+`execute_task`'s `ValueError`, `task run`'s and `task doctor`'s inline checks;
+`--json` on `plan draft` and `plan status`. Landing here doesn't mean the open
+question below was resolved as more than "kept the narrower scope" — see its own
+note.
 **Objective:** Two small, mechanical CLI gaps where escape-ai already holds the exact
 data a user needs to recover from a mistake or answer a pending question, but prints
 only a count or a flat "not found" instead of the data itself. Distilled from
-`plan/done/escape-ai-improvements.md` findings #1 and #2.
+`plan/active/escape-ai-improvements.md` findings #1 and #2.
 
 ## Why this is a separate plan
 
@@ -74,8 +80,10 @@ not a new question format to design.
 
 ## Open questions
 
-1. Whether the task-ID suggestion list should be scoped to the given
-   `repository_id` only (as sketched above) or also check across *other* registered
-   repositories in case the user targeted the wrong repository entirely — leaning
-   toward repository-scoped only for the first cut, since that's exactly what the
-   real dogfooding case hit, but not decided.
+1. **Resolved 2026-08-03, exactly as leaned:** `_task_id_suggestions`
+   (`escape_ai_cli.py`) is scoped to the given `repository_path` only, via a
+   plain `str.startswith` prefix match against sibling directory names under
+   `.esc-ai/workflows/active/` — no cross-repository search, no fuzzy-matching
+   library. Shared by all three places that resolve a task ID (`execute_task`'s
+   `ValueError`, and `task run`/`task doctor`'s inline checks in
+   `_dispatch_task`) rather than duplicated three times.
