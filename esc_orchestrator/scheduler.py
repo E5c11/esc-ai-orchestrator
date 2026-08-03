@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Protocol, Any
 
 from esc_orchestrator.initiative import analyze_task_impact
-from esc_orchestrator.runtime import ArchitectureCoverageError
+from esc_orchestrator.runtime import PreDispatchBlockerError
 from esc_orchestrator.store import Store
 from esc_exec.checkpoints import checkpoint_document
 from esc_exec.registry import resolve_route
@@ -33,8 +33,14 @@ def _verification_result(output: Path) -> dict[str, Any] | None:
 
 
 def _verification_failures(result: dict[str, Any]) -> list[str]:
+    # failure_category (plan/active/pre-flight-doctor-and-gate-prerequisites.md
+    # finding #6) is always present on a failed/error check -- see
+    # esc_exec.verification_execution.classify_failure -- so a human (or the next
+    # agent attempt) reading this blocker doesn't have to re-derive it from a raw
+    # log every time.
     return [
-        f"{gate['id']}.{check['id']} ({check['status']}, exit_code={check['exit_code']})"
+        f"{gate['id']}.{check['id']} ({check['status']}, exit_code={check['exit_code']}, "
+        f"category={check.get('failure_category')})"
         for gate in result["gates"]
         for check in gate["checks"]
         if check["status"] in {"failed", "error"}
@@ -150,10 +156,12 @@ class Scheduler:
                         pass
             except Exception as exc:
                 error = str(exc)[:1000]
-                # ArchitectureCoverageError (headless-backdoor-mode.md task 1) carries
-                # one blocker per incomplete doc; every other exception still gets the
+                # Any PreDispatchBlockerError (ArchitectureCoverageError,
+                # EnvironmentPrerequisiteError -- see
+                # plan/active/pre-flight-doctor-and-gate-prerequisites.md) carries
+                # one blocker per distinct gap; every other exception still gets the
                 # single opaque message, exactly as before.
-                blockers = exc.blockers if isinstance(exc, ArchitectureCoverageError) else [error]
+                blockers = exc.blockers if isinstance(exc, PreDispatchBlockerError) else [error]
                 output_path = None
                 try:
                     task = self.store.contracts(task_id)["task"]

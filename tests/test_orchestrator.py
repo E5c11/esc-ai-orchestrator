@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -927,6 +928,172 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual("failed", store.get_task("task-b")["status"])
             checkpoint = store.output_yaml(store.get_latest_run_for_task("task-b")["id"], "checkpoint.yaml")
             self.assertIn("ORCH-BE-FEAT", checkpoint["progress"]["blockers"][0])
+            scheduler.close()
+
+    def test_environment_prerequisite_gate_blocks_unsatisfied_prerequisite(self):
+        """
+        plan/active/pre-flight-doctor-and-gate-prerequisites.md: a verification
+        gate check declaring an unsatisfied `prerequisites` entry must stop the run
+        before the adapter is ever invoked -- same shape as the architecture
+        coverage gate above, just a different pre-dispatch check.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            self._repository_with_component(repository_dir, "content")
+            write_yaml(component_manifest_path(repository_dir, "content").parent / "esc-verification-profile.yaml", {
+                "schema_version": 1,
+                "profile": {"id": "content-verification", "component": "content"},
+                "gates": {
+                    "focused": [], "component": [], "impact": [],
+                    "final": [{
+                        "id": "smoke", "command": ["true"],
+                        "prerequisites": [{"kind": "env", "name": "ESC_AI_TEST_MISSING_TOKEN_XYZ"}],
+                    }],
+                },
+            })
+            manifest = load_yaml(component_manifest_path(repository_dir, "content"))
+            manifest["paths"]["verification_profile"] = "esc-verification-profile.yaml"
+            write_yaml(component_manifest_path(repository_dir, "content"), manifest)
+            generate_indexes(repository_dir)
+            generate_dependency_graph(repository_dir)
+            add_route(registry, "repositories", "repo", repository_dir)
+
+            class RecordingAdapter:
+                def __init__(self):
+                    self.called = False
+
+                def execute(self, task_path, workspace_path, adapter_path, policy_path):
+                    self.called = True
+                    run_dir = repository_dir / ".esc-ai" / "runs" / "run-should-not-happen"
+                    run_dir.mkdir(parents=True)
+                    return run_dir
+
+            runtime = _AdapterRuntime()
+            adapter = RecordingAdapter()
+            runtime.adapter = adapter
+            runtime.registry = registry
+            scheduler = Scheduler(store, runtime, registry)
+            task_contracts = contracts()
+            task_contracts["task"]["scope"] = {"components": ["content"]}
+            task_id, run_id = scheduler.submit(task_contracts)
+            scheduler.queue.join()
+
+            self.assertFalse(adapter.called)
+            run = store.get_run(run_id)
+            self.assertEqual("failed", run["status"])
+            checkpoint = store.output_yaml(run_id, "checkpoint.yaml")
+            self.assertEqual("blocked", checkpoint["checkpoint"]["status"])
+            self.assertEqual(1, len(checkpoint["progress"]["blockers"]))
+            self.assertIn("ESC_AI_TEST_MISSING_TOKEN_XYZ", checkpoint["progress"]["blockers"][0])
+            self.assertIn("unreachable", checkpoint["progress"]["blockers"][0])
+            scheduler.close()
+
+    def test_environment_prerequisite_gate_allows_satisfied_prerequisite(self):
+        """A satisfied prerequisite must never block the run -- the gate only
+        stops on a real gap, never on the mere presence of a declaration."""
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            self._repository_with_component(repository_dir, "content")
+            write_yaml(component_manifest_path(repository_dir, "content").parent / "esc-verification-profile.yaml", {
+                "schema_version": 1,
+                "profile": {"id": "content-verification", "component": "content"},
+                "gates": {
+                    "focused": [], "component": [], "impact": [],
+                    "final": [{
+                        "id": "smoke", "command": ["true"],
+                        "prerequisites": [{"kind": "env", "name": "ESC_AI_TEST_PRESENT_TOKEN_XYZ"}],
+                    }],
+                },
+            })
+            manifest = load_yaml(component_manifest_path(repository_dir, "content"))
+            manifest["paths"]["verification_profile"] = "esc-verification-profile.yaml"
+            write_yaml(component_manifest_path(repository_dir, "content"), manifest)
+            generate_indexes(repository_dir)
+            generate_dependency_graph(repository_dir)
+            add_route(registry, "repositories", "repo", repository_dir)
+
+            class RecordingAdapter:
+                def __init__(self):
+                    self.called = False
+
+                def execute(self, task_path, workspace_path, adapter_path, policy_path):
+                    self.called = True
+                    run_dir = repository_dir / ".esc-ai" / "runs" / "run-ok"
+                    run_dir.mkdir(parents=True)
+                    return run_dir
+
+            runtime = _AdapterRuntime()
+            adapter = RecordingAdapter()
+            runtime.adapter = adapter
+            runtime.registry = registry
+            scheduler = Scheduler(store, runtime, registry)
+            task_contracts = contracts()
+            task_contracts["task"]["scope"] = {"components": ["content"]}
+            os.environ["ESC_AI_TEST_PRESENT_TOKEN_XYZ"] = "token"
+            try:
+                task_id, run_id = scheduler.submit(task_contracts)
+                scheduler.queue.join()
+            finally:
+                del os.environ["ESC_AI_TEST_PRESENT_TOKEN_XYZ"]
+
+            self.assertTrue(adapter.called)
+            self.assertEqual("succeeded", store.get_run(run_id)["status"])
+            scheduler.close()
+
+    def test_verification_failure_blocker_includes_failure_category(self):
+        """
+        plan/active/pre-flight-doctor-and-gate-prerequisites.md finding #6: a real
+        gate failure's checkpoint blocker should carry the classifier's category,
+        not just a bare status/exit_code a human has to re-derive from raw logs.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "db.sqlite")
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            self._repository_with_component(repository_dir, "content")
+            write_yaml(component_manifest_path(repository_dir, "content").parent / "esc-verification-profile.yaml", {
+                "schema_version": 1,
+                "profile": {"id": "content-verification", "component": "content"},
+                "gates": {
+                    "focused": [], "component": [], "impact": [],
+                    "final": [{
+                        "id": "smoke",
+                        "command": [sys.executable, "-c", "import sys; sys.stderr.write('Connection refused'); sys.exit(1)"],
+                    }],
+                },
+            })
+            manifest = load_yaml(component_manifest_path(repository_dir, "content"))
+            manifest["paths"]["verification_profile"] = "esc-verification-profile.yaml"
+            write_yaml(component_manifest_path(repository_dir, "content"), manifest)
+            generate_indexes(repository_dir)
+            generate_dependency_graph(repository_dir)
+            add_route(registry, "repositories", "repo", repository_dir)
+
+            class RecordingAdapter:
+                def execute(self, task_path, workspace_path, adapter_path, policy_path):
+                    run_dir = repository_dir / ".esc-ai" / "runs" / "run-1"
+                    run_dir.mkdir(parents=True)
+                    return run_dir
+
+            runtime = _AdapterRuntime()
+            runtime.adapter = RecordingAdapter()
+            runtime.registry = registry
+            scheduler = Scheduler(store, runtime, registry)
+            task_contracts = contracts()
+            task_contracts["task"]["scope"] = {"components": ["content"]}
+            task_id, run_id = scheduler.submit(task_contracts)
+            scheduler.queue.join()
+
+            self.assertEqual("failed", store.get_run(run_id)["status"])
+            checkpoint = store.output_yaml(run_id, "checkpoint.yaml")
+            self.assertIn("category=connectivity", checkpoint["progress"]["blockers"][0])
             scheduler.close()
 
     def test_http_submission_and_observation(self):

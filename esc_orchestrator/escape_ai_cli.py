@@ -40,7 +40,7 @@ from esc_exec.roadmap import load_project_roadmap, save_project_roadmap
 from esc_exec.yaml_io import load_yaml
 
 from esc_orchestrator.initiative import analyze_task_impact, find_ready_tasks
-from esc_orchestrator.runtime import ClaudeCodeRuntime, CodexRuntime, OpenCodeRuntime
+from esc_orchestrator.runtime import ClaudeCodeRuntime, CodexRuntime, OpenCodeRuntime, doctor_check
 from esc_orchestrator.scaffold_wizards import render_wizard_suggestion
 from esc_orchestrator.scheduler import Scheduler
 from esc_orchestrator.store import Store
@@ -1891,6 +1891,12 @@ def build_parser() -> argparse.ArgumentParser:
     task_impact.add_argument("task_id")
     task_promote.add_argument("--yes", action="store_true", help="Actually promote; without this, preview only")
 
+    task_doctor = task_commands.add_parser(
+        "doctor", help="Check a task's architecture coverage and verification-gate prerequisites, without dispatching",
+    )
+    task_doctor.add_argument("repository")
+    task_doctor.add_argument("task_id")
+
     resume_cmd = subcommands.add_parser("resume", help="Show active work across registered repositories")
     resume_cmd.add_argument("--json", action="store_true")
 
@@ -2091,6 +2097,25 @@ def _dispatch_task(args: argparse.Namespace, store: Store, registry: Path) -> in
             return 1
         print(json.dumps(document, indent=2))
         return 0
+
+    if args.task_command == "doctor":
+        try:
+            repository_id, repository_path = resolve_repository(args.repository, registry)
+            task_path = repository_path / ".esc-ai" / "workflows" / "active" / args.task_id / "task.yaml"
+            if not task_path.is_file():
+                print(f"INVALID    no task.yaml found for `{args.task_id}` in `{repository_id}`")
+                return 1
+            blockers = doctor_check(repository_path, task_path, registry)
+        except (KeyError, FileNotFoundError, ValueError) as exc:
+            print(f"INVALID    {exc}")
+            return 1
+        if not blockers:
+            print("CLEAN      architecture coverage and verification-gate prerequisites are both satisfied.")
+            return 0
+        print(f"BLOCKED    {len(blockers)} issue(s) found; a real `task run` would fail before this task even starts:")
+        for blocker in blockers:
+            print(f"  - {blocker}")
+        return 1
 
     return 1
 

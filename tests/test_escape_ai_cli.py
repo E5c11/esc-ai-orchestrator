@@ -2217,6 +2217,109 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             self.assertIn("INCOMPLETE", out)
             self.assertIn("provider auth", out)
 
+    def test_task_doctor_reports_clean_for_a_satisfied_task(self):
+        """
+        plan/active/pre-flight-doctor-and-gate-prerequisites.md: `task doctor` runs
+        the same pre-dispatch checks `task run` would, without ever building a
+        run -- a task with no declared prerequisites (the common case today) and
+        complete architecture coverage should report clean.
+        """
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            run(["repository", "add", "repo", str(repository_dir)])
+            run(["repository", "analyze", "repo", "--json"])
+            answers_file = root / "answers.json"
+            answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+            run(["repository", "answer", "repo", str(answers_file)])
+            run(["repository", "apply", "repo"])
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Add CSV export.", "repositories": ["repo"],
+            }), encoding="utf-8")
+            run(["plan", "draft", "feature-export", str(request_file)])
+            plan_answers_file = root / "plan-answers.json"
+            plan_answers_file.write_text(json.dumps({
+                "components": {"repo": ["content"]}, "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+            }), encoding="utf-8")
+            run(["plan", "answer", "feature-export", str(plan_answers_file)])
+            run(["plan", "apply", "feature-export"])
+
+            code, out = run(["task", "doctor", "repo", "feature-export"])
+            self.assertEqual(0, code)
+            self.assertIn("CLEAN", out)
+
+    def test_task_doctor_reports_unsatisfied_prerequisite_without_dispatching(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            run(["repository", "add", "repo", str(repository_dir)])
+            run(["repository", "analyze", "repo", "--json"])
+            answers_file = root / "answers.json"
+            answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+            run(["repository", "answer", "repo", str(answers_file)])
+            run(["repository", "apply", "repo"])
+
+            profile_path = repository_dir / ".esc-ai" / "components" / "content" / "esc-verification-profile.yaml"
+            profile = load_yaml(profile_path)
+            profile["gates"]["final"][0]["prerequisites"] = [
+                {"kind": "env", "name": "ESC_AI_TEST_CLI_MISSING_TOKEN_XYZ"},
+            ]
+            write_yaml(profile_path, profile)
+
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Add CSV export.", "repositories": ["repo"],
+            }), encoding="utf-8")
+            run(["plan", "draft", "feature-export", str(request_file)])
+            plan_answers_file = root / "plan-answers.json"
+            plan_answers_file.write_text(json.dumps({
+                "components": {"repo": ["content"]}, "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+            }), encoding="utf-8")
+            run(["plan", "answer", "feature-export", str(plan_answers_file)])
+            run(["plan", "apply", "feature-export"])
+
+            code, out = run(["task", "doctor", "repo", "feature-export"])
+            self.assertEqual(1, code)
+            self.assertIn("BLOCKED", out)
+            self.assertIn("ESC_AI_TEST_CLI_MISSING_TOKEN_XYZ", out)
+
+    def test_task_doctor_unknown_task_id_is_invalid(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            run(["repository", "add", "repo", str(repository_dir)])
+            code, out = run(["task", "doctor", "repo", "does-not-exist"])
+            self.assertEqual(1, code)
+            self.assertIn("INVALID", out)
+
     def test_resume_json_output(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)

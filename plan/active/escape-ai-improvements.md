@@ -1,5 +1,34 @@
 # escape-ai — issues found while dogfooding (ampm-kmp/ampm-backend/ampm-contracts)
 
+**Status:** Distilled 2026-08-03 — every finding below has been turned into a proper
+design doc; this log is kept as the original source material, not as open work
+itself. Where each finding landed:
+
+- **#1** (task-ID discoverability) and **#2** (`plan draft` questions not
+  inspectable) → [`cli-discoverability.md`](../future/cli-discoverability.md)
+- **#3** (no pre-flight environment check), **#4** (worktrees don't inherit
+  gitignored config), **#5** (gates don't declare prerequisites), **#6** (failure
+  categorization left to the human), and the scoped-verification half of **#8**
+  (eager `@Bean` pulling in unrelated modules) →
+  [`pre-flight-doctor-and-gate-prerequisites.md`](../done/pre-flight-doctor-and-gate-prerequisites.md)
+  (**implemented** 2026-08-03)
+- **#7** (dependency chain not printed) and **#9** (a no-op "succeeded" run is
+  indistinguishable from a real one — also found to silently auto-advance dependent
+  tasks, worse than originally described) →
+  [`run-outcome-surfacing.md`](../future/run-outcome-surfacing.md)
+- **#8**'s underlying `ampm-backend` bug (eager, non-conditional credential-backed
+  bean crashing full-context tests) is a real issue in that repository, not
+  escape-ai's — flagged back to it separately, not part of any escape-ai plan.
+- **#10** (a fix task's passing tests don't mean the fix works; Crashlytics-only
+  logging isn't locally visible) — no new plan doc. The concrete, escape-ai-side ask
+  (a task whose completion condition is "add logging for this failure path" should
+  default to asking for *locally visible* logging, not just a crash-reporting SDK
+  call) is small enough to fold directly into the instruction-bundle wording next
+  time that template is touched, rather than warranting its own design doc. The
+  broader lesson (a fix isn't verified until exercised against the real running
+  system) is a human-process discipline point, not something escape-ai's tooling
+  itself can enforce.
+
 Running log of real friction points hit while using `escape-ai` (headless/BACKDOOR mode) to
 orchestrate the `user-identity-spring` and `referral-premium-spring` initiatives across
 `ampm-kmp`, `ampm-backend`, and `ampm-contracts`. Written for whoever preps this for public
