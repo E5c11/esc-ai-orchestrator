@@ -11,7 +11,7 @@ from unittest.mock import patch
 from esc_exec.indexing import generate_indexes
 from esc_exec.manifests import component_manifest_path, generate_gradle_manifests, repository_manifest_path
 from esc_exec.registry import add_route, set_provider
-from esc_exec.roadmap import load_project_roadmap
+from esc_exec.roadmap import load_project_roadmap, save_project_roadmap
 from esc_exec.yaml_io import load_yaml, write_yaml
 
 from esc_orchestrator import escape_ai_cli as cli
@@ -1794,6 +1794,46 @@ class PlanningConversationInteractiveTests(unittest.TestCase):
             summary = (repository_dir / ".esc-ai" / "conversations" / "plan-init-1" / "summary.yaml")
             self.assertTrue(summary.is_file())
 
+    def test_confirm_step_shows_current_and_proposed_roadmap_before_asking(self):
+        # ai-conversation-primitive.md open question 7, resolved by
+        # plan/done/project-vision-and-direction.md design 3: this confirm used to
+        # ask a yes/no question about an unseen change.
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo"
+            repository_dir.mkdir()
+            set_provider(registry, "claude", "subscription")
+            save_project_roadmap(repository_dir, "repo", "Old purpose.", "Old stage.", "Old direction.")
+
+            compaction_payload = json.dumps({
+                "progress": {"completed": [], "decisions": [], "remaining": [], "open_questions": []},
+                "roadmap": {
+                    "purpose": "New purpose.", "current_stage": "New stage.",
+                    "direction": "New direction.", "durable_decisions": [],
+                },
+            })
+            fake_client = _FakeConversationClient([
+                _conversation_stream("What format should the export use?"),
+                _conversation_stream(compaction_payload),
+            ])
+
+            responses = iter(["1", "", "1"])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                buffer = io.StringIO()
+                with redirect_stdout(buffer), patch("esc_orchestrator.escape_ai_cli.ClaudeCodeClient", return_value=fake_client):
+                    cli.run_planning_conversation_interactive(registry, repository_dir, "repo", "init-1", "Add CSV export.")
+            finally:
+                builtins.input = original_input
+
+            output = buffer.getvalue()
+            self.assertIn("Current roadmap:", output)
+            self.assertIn("Old purpose.", output)
+            self.assertIn("Proposed roadmap:", output)
+            self.assertIn("New purpose.", output)
+
     def test_declining_roadmap_update_leaves_no_roadmap_file(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -3010,6 +3050,26 @@ class ConfigureSystemRenderingTests(unittest.TestCase):
         self.assertIn("`some-removed-profile` is not a known profile", rendered)
         self.assertIn(cli.DEFAULT_POLICY_PROFILE_ID, rendered)
 
+    def test_render_roadmap_none_set(self):
+        self.assertEqual("No roadmap set yet for this repository.", cli.render_roadmap(None))
+
+    def test_render_roadmap_shows_every_field(self):
+        existing = {"project_roadmap": {
+            "purpose": "A demo app.", "current_stage": "Scaffolding.", "direction": "Add auth next.",
+            "durable_decisions": ["Use Kotlin Multiplatform."], "updated_at": "2026-08-05T00:00:00Z",
+        }}
+        rendered = cli.render_roadmap(existing)
+        self.assertIn("Purpose: A demo app.", rendered)
+        self.assertIn("Current stage: Scaffolding.", rendered)
+        self.assertIn("Direction: Add auth next.", rendered)
+        self.assertIn("Durable decisions: Use Kotlin Multiplatform.", rendered)
+        self.assertIn("Updated: 2026-08-05T00:00:00Z", rendered)
+
+    def test_render_roadmap_missing_fields_render_as_none(self):
+        rendered = cli.render_roadmap({"project_roadmap": {}})
+        self.assertIn("Purpose: (none)", rendered)
+        self.assertIn("Durable decisions: (none)", rendered)
+
     def test_render_repository_list_empty(self):
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
@@ -3104,7 +3164,7 @@ class ConfigurePolicyInteractiveTests(unittest.TestCase):
                 "4",  # Show / select default policy
                 "1",  # select a different one now
                 str(profile_ids.index("readonly-review") + 1),
-                "5",  # back
+                "6",  # back
             ])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
@@ -3113,6 +3173,112 @@ class ConfigurePolicyInteractiveTests(unittest.TestCase):
             finally:
                 builtins.input = original_input
             self.assertEqual("readonly-review", cli.default_policy_id(registry))
+
+
+class ConfigureRoadmapInteractiveTests(unittest.TestCase):
+    """plan/done/project-vision-and-direction.md design 1: a direct, human-only
+    path to project_roadmap, independent of the AI-mediated planning conversation
+    that's the only way to reach it otherwise."""
+
+    def test_no_repositories_registered_prints_message_and_returns(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                cli.configure_roadmap_interactive(registry)
+            self.assertIn("No repositories registered yet.", buffer.getvalue())
+
+    def test_declining_leaves_no_roadmap_file(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            responses = iter(["1", "2"])  # select repo, decline set/update
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                cli.configure_roadmap_interactive(registry)
+            finally:
+                builtins.input = original_input
+            self.assertIsNone(load_project_roadmap(repository_dir))
+
+    def test_setting_fresh_values_saves_them(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            responses = iter([
+                "1",               # select repo
+                "1",               # confirm set/update
+                "A demo app.",     # purpose
+                "Scaffolding.",    # current stage
+                "Add auth next.",  # direction
+                "Use KMP.",        # durable decisions
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                cli.configure_roadmap_interactive(registry)
+            finally:
+                builtins.input = original_input
+            roadmap = load_project_roadmap(repository_dir)["project_roadmap"]
+            self.assertEqual("A demo app.", roadmap["purpose"])
+            self.assertEqual(["Use KMP."], roadmap["durable_decisions"])
+
+    def test_blank_input_keeps_existing_values(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            save_project_roadmap(repository_dir, "repo", "Old purpose.", "Old stage.", "Old direction.", ["Old decision."])
+            responses = iter([
+                "1",  # select repo
+                "1",  # confirm set/update
+                "",   # blank purpose -> keeps old
+                "New stage.",
+                "",   # blank direction -> keeps old
+                "",   # blank decisions -> keeps old
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                cli.configure_roadmap_interactive(registry)
+            finally:
+                builtins.input = original_input
+            roadmap = load_project_roadmap(repository_dir)["project_roadmap"]
+            self.assertEqual("Old purpose.", roadmap["purpose"])
+            self.assertEqual("New stage.", roadmap["current_stage"])
+            self.assertEqual("Old direction.", roadmap["direction"])
+            self.assertEqual(["Old decision."], roadmap["durable_decisions"])
+
+    def test_reachable_from_the_configure_submenu(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry = root / "registry.yaml"
+            repository_dir = root / "repo"
+            repository_dir.mkdir()
+            add_route(registry, "repositories", "repo", repository_dir)
+            responses = iter([
+                "5",  # Show / set project roadmap
+                "1",  # select repo
+                "1",  # confirm set/update
+                "A demo app.", "Scaffolding.", "Add auth next.", "",
+                "6",  # back
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                cli.run_configure_interactive(registry)
+            finally:
+                builtins.input = original_input
+            roadmap = load_project_roadmap(repository_dir)["project_roadmap"]
+            self.assertEqual("A demo app.", roadmap["purpose"])
 
 
 class RunDetailTests(unittest.TestCase):
@@ -3180,7 +3346,7 @@ class ConfigureSystemInteractiveTests(unittest.TestCase):
     def test_shows_no_provider_and_no_repositories_then_backs_out(self):
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
-            responses = iter(["1", "3", "5"])  # show provider, list repos, back
+            responses = iter(["1", "3", "6"])  # show provider, list repos, back
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
@@ -3197,7 +3363,7 @@ class ConfigureSystemInteractiveTests(unittest.TestCase):
     def test_declining_to_connect_leaves_provider_unset(self):
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
-            responses = iter(["2", "2", "5"])  # connect/switch -> decline -> back
+            responses = iter(["2", "2", "6"])  # connect/switch -> decline -> back
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
@@ -3210,7 +3376,7 @@ class ConfigureSystemInteractiveTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
             # connect/switch -> confirm -> claude -> subscription -> back
-            responses = iter(["2", "1", "1", "1", "5"])
+            responses = iter(["2", "1", "1", "1", "6"])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             original_available, original_status = cli.claude_cli_available, cli.claude_auth_status
@@ -3759,6 +3925,81 @@ class PolicyDispatchTests(unittest.TestCase):
             self.assertEqual(0, code)
             self.assertIn("Policy: `readonly-review`", out)
             self.assertIn("Scope: this run will be granted -- read.", out)
+
+
+class RoadmapDispatchTests(unittest.TestCase):
+    """plan/done/project-vision-and-direction.md design 1: escape-ai roadmap
+    show/set, the non-interactive equivalent of "Configure system" -> "Show / set
+    project roadmap"."""
+
+    def _run(self, db, registry, argv):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+        return code, buffer.getvalue()
+
+    def test_show_with_nothing_set(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            self._run(db, registry, ["repository", "add", "repo", str(repository_dir)])
+            code, out = self._run(db, registry, ["roadmap", "show", "repo"])
+            self.assertEqual(0, code)
+            self.assertIn("No roadmap set yet for this repository.", out)
+
+    def test_set_then_show_round_trips(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            self._run(db, registry, ["repository", "add", "repo", str(repository_dir)])
+            answers_file = root / "roadmap-answers.json"
+            answers_file.write_text(json.dumps({
+                "purpose": "A demo app.", "current_stage": "Scaffolding.",
+                "direction": "Add auth next.", "durable_decisions": ["Use KMP."],
+            }), encoding="utf-8")
+            code, out = self._run(db, registry, ["roadmap", "set", "repo", str(answers_file)])
+            self.assertEqual(0, code)
+            self.assertIn("SET        roadmap for `repo`", out)
+            code, out = self._run(db, registry, ["roadmap", "show", "repo"])
+            self.assertEqual(0, code)
+            self.assertIn("Purpose: A demo app.", out)
+            self.assertIn("Durable decisions: Use KMP.", out)
+
+    def test_set_with_a_partial_answers_file_keeps_other_fields(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            self._run(db, registry, ["repository", "add", "repo", str(repository_dir)])
+            full_answers = root / "full-answers.json"
+            full_answers.write_text(json.dumps({
+                "purpose": "A demo app.", "current_stage": "Scaffolding.",
+                "direction": "Add auth next.", "durable_decisions": ["Use KMP."],
+            }), encoding="utf-8")
+            self._run(db, registry, ["roadmap", "set", "repo", str(full_answers)])
+
+            partial_answers = root / "partial-answers.json"
+            partial_answers.write_text(json.dumps({"current_stage": "Auth in progress."}), encoding="utf-8")
+            self._run(db, registry, ["roadmap", "set", "repo", str(partial_answers)])
+
+            code, out = self._run(db, registry, ["roadmap", "show", "repo"])
+            self.assertEqual(0, code)
+            self.assertIn("Purpose: A demo app.", out)
+            self.assertIn("Current stage: Auth in progress.", out)
+            self.assertIn("Direction: Add auth next.", out)
+
+    def test_unresolvable_repository_is_invalid(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            code, out = self._run(db, registry, ["roadmap", "show", "does-not-exist"])
+            self.assertEqual(1, code)
+            self.assertIn("INVALID", out)
 
 
 class CollectAnswerTests(unittest.TestCase):

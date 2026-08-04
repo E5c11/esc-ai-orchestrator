@@ -230,6 +230,29 @@ def render_policy_status(profile_id: str | None) -> str:
     return f"Default policy: `{profile_id}` -- {POLICY_PROFILES[profile_id]['policy']['description']}"
 
 
+def render_roadmap(existing_roadmap: dict[str, Any] | None) -> str:
+    """
+    `existing_roadmap` is whatever load_project_roadmap returns -- the raw
+    {"project_roadmap": {...}} document, or None if nothing has been saved yet.
+    Shared by `roadmap show`, "Configure system" -> "Show / set project roadmap",
+    and the pre-confirm diff in run_planning_conversation_interactive, so all three
+    surfaces render this identically.
+    """
+    if not existing_roadmap:
+        return "No roadmap set yet for this repository."
+    roadmap = existing_roadmap.get("project_roadmap", {})
+    decisions = roadmap.get("durable_decisions") or []
+    lines = [
+        f"Purpose: {roadmap.get('purpose') or '(none)'}",
+        f"Current stage: {roadmap.get('current_stage') or '(none)'}",
+        f"Direction: {roadmap.get('direction') or '(none)'}",
+        f"Durable decisions: {', '.join(decisions) if decisions else '(none)'}",
+    ]
+    if roadmap.get("updated_at"):
+        lines.append(f"Updated: {roadmap['updated_at']}")
+    return "\n".join(lines)
+
+
 def render_repository_list(repository_ids: list[str], registry: Path) -> str:
     if not repository_ids:
         return "No repositories registered yet."
@@ -1774,16 +1797,30 @@ def run_planning_conversation_interactive(
         purpose=f"plan {initiative_id}: {objective}", existing_roadmap=existing_roadmap,
     )
     proposal = compaction.get("roadmap_proposal")
-    if proposal and confirm("Update this repository's saved roadmap with what was just discussed?"):
+    if proposal:
+        # Show current vs. proposed before asking -- resolves
+        # ai-conversation-primitive.md's open question 7: this confirm used to ask
+        # a yes/no question about an unseen change. Reuses render_roadmap, the same
+        # rendering `roadmap show` and "Configure system" use, rather than a
+        # separate format.
         prior_purpose = (existing_roadmap or {}).get("project_roadmap", {}).get("purpose", "")
-        save_project_roadmap(
-            repository_path, repository_id,
-            proposal.get("purpose") or prior_purpose,
-            proposal.get("current_stage") or "",
-            proposal.get("direction") or "",
-            proposal.get("durable_decisions") or [],
-        )
-        print("Roadmap updated.")
+        proposed_document = {"project_roadmap": {
+            "purpose": proposal.get("purpose") or prior_purpose,
+            "current_stage": proposal.get("current_stage") or "",
+            "direction": proposal.get("direction") or "",
+            "durable_decisions": proposal.get("durable_decisions") or [],
+        }}
+        print("Current roadmap:")
+        print(render_roadmap(existing_roadmap))
+        print("Proposed roadmap:")
+        print(render_roadmap(proposed_document))
+        if confirm("Update this repository's saved roadmap with what was just discussed?"):
+            roadmap = proposed_document["project_roadmap"]
+            save_project_roadmap(
+                repository_path, repository_id,
+                roadmap["purpose"], roadmap["current_stage"], roadmap["direction"], roadmap["durable_decisions"],
+            )
+            print("Roadmap updated.")
     return last_text
 
 
@@ -2088,16 +2125,53 @@ def configure_policy_interactive(registry: Path) -> None:
     print(f"Default policy set to `{selected}`.")
 
 
+def configure_roadmap_interactive(registry: Path) -> None:
+    """
+    "Configure system" -> "Show / set project roadmap" -- a direct, human-only path
+    to project_roadmap (.esc-ai/roadmap.yaml), independent of the AI-mediated
+    planning conversation (run_planning_conversation_interactive) that's the only
+    way to reach it otherwise -- see plan/done/project-vision-and-direction.md
+    design 1. Reuses the same repository-picker pattern as "Observe a run". Q&A
+    with blank-keeps-current-value, not a live conversation: a direction statement
+    doesn't need AI mediation to be useful, and this path works with no provider
+    connected at all.
+    """
+    repository_ids = registered_repository_ids(registry)
+    if not repository_ids:
+        print("No repositories registered yet.")
+        return
+    choice = select_menu("Select a repository:", repository_ids)
+    if choice is None:
+        return
+    repository_id = repository_ids[choice]
+    _, repository_path = resolve_repository(repository_id, registry)
+    existing = load_project_roadmap(repository_path)
+    print(render_roadmap(existing))
+    if not confirm("Set/update this repository's roadmap now?"):
+        return
+    current = (existing or {}).get("project_roadmap", {})
+    purpose = ask(f"Purpose [{current.get('purpose') or ''}]:").strip() or current.get("purpose", "")
+    current_stage = ask(f"Current stage [{current.get('current_stage') or ''}]:").strip() or current.get("current_stage", "")
+    direction = ask(f"Direction [{current.get('direction') or ''}]:").strip() or current.get("direction", "")
+    existing_decisions = current.get("durable_decisions") or []
+    decisions_raw = ask(f"Durable decisions, comma-separated [{', '.join(existing_decisions)}]:").strip()
+    durable_decisions = (
+        [item.strip() for item in decisions_raw.split(",") if item.strip()] if decisions_raw else existing_decisions
+    )
+    save_project_roadmap(repository_path, repository_id, purpose, current_stage, direction, durable_decisions)
+    print("Roadmap updated.")
+
+
 def run_configure_interactive(registry: Path) -> int:
     while True:
         choice = select_menu(
             "Configure system:",
             [
                 "Show current provider", "Connect / switch provider", "List registered repositories",
-                "Show / select default policy", "Back",
+                "Show / select default policy", "Show / set project roadmap", "Back",
             ],
         )
-        if choice is None or choice == 4:
+        if choice is None or choice == 5:
             return 0
         if choice == 0:
             print(render_provider_status(active_provider(registry)))
@@ -2107,6 +2181,8 @@ def run_configure_interactive(registry: Path) -> int:
             print(render_repository_list(registered_repository_ids(registry), registry))
         elif choice == 3:
             configure_policy_interactive(registry)
+        elif choice == 4:
+            configure_roadmap_interactive(registry)
 
 
 def _resume_item_label(item: dict[str, Any]) -> str:
@@ -2297,6 +2373,13 @@ def build_parser() -> argparse.ArgumentParser:
     policy_commands.add_parser("show")
     policy_set = policy_commands.add_parser("set")
     policy_set.add_argument("profile_id", choices=list(POLICY_PROFILES))
+
+    roadmap = subcommands.add_parser("roadmap", help="Show or set a repository's project roadmap")
+    roadmap_commands = roadmap.add_subparsers(dest="roadmap_command", required=True)
+    roadmap_commands.add_parser("show").add_argument("repository")
+    roadmap_set = roadmap_commands.add_parser("set")
+    roadmap_set.add_argument("repository")
+    roadmap_set.add_argument("answers_file", type=Path)
 
     return parser
 
@@ -2551,6 +2634,34 @@ def _dispatch_policy(args: argparse.Namespace, store: Store, registry: Path) -> 
     return 1
 
 
+def _dispatch_roadmap(args: argparse.Namespace, store: Store, registry: Path) -> int:
+    try:
+        repository_id, repository_path = resolve_repository(args.repository, registry)
+    except (KeyError, FileNotFoundError) as exc:
+        print(f"INVALID    {exc}")
+        return 1
+    if args.roadmap_command == "show":
+        print(render_roadmap(load_project_roadmap(repository_path)))
+        return 0
+    if args.roadmap_command == "set":
+        # A field omitted from answers_file keeps its current saved value rather
+        # than being blanked -- a roadmap update is normally a small delta, not a
+        # full restatement (see plan/done/project-vision-and-direction.md open
+        # question 1).
+        answers = json.loads(args.answers_file.read_text(encoding="utf-8"))
+        current = (load_project_roadmap(repository_path) or {}).get("project_roadmap", {})
+        save_project_roadmap(
+            repository_path, repository_id,
+            answers.get("purpose", current.get("purpose", "")),
+            answers.get("current_stage", current.get("current_stage", "")),
+            answers.get("direction", current.get("direction", "")),
+            answers.get("durable_decisions", current.get("durable_decisions", [])),
+        )
+        print(f"SET        roadmap for `{repository_id}`.")
+        return 0
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     registry = args.registry or default_registry_path()
@@ -2569,6 +2680,8 @@ def main(argv: list[str] | None = None) -> int:
         return _dispatch_provider(args, store, registry)
     if args.command == "policy":
         return _dispatch_policy(args, store, registry)
+    if args.command == "roadmap":
+        return _dispatch_roadmap(args, store, registry)
     return 1
 
 

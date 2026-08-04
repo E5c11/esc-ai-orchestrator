@@ -60,6 +60,15 @@ escape-ai policy show                                     # the default policy p
                                                             # standard-autonomous if unset)
 escape-ai policy set <profile-id>                          # standard-autonomous | readonly-review
 
+escape-ai roadmap show <repository-id>                    # a repository's durable purpose/
+                                                            # current_stage/direction/
+                                                            # durable_decisions, or "no roadmap
+                                                            # set yet"
+escape-ai roadmap set <repository-id> <answers.json>       # {purpose?, current_stage?,
+                                                            # direction?, durable_decisions?} --
+                                                            # an omitted field keeps its current
+                                                            # saved value
+
 escape-ai resume [--json]                                 # active work across registered
                                                            # repositories: latest run status,
                                                            # attempt count, checkpoint presence
@@ -94,6 +103,15 @@ non-interactive paths print exactly which files to review and commit yourself.
 
 Re-running onboarding for a repository with unchanged inputs resumes from the stored
 proposal instead of re-analyzing from scratch.
+
+A repository's `project_roadmap` (`.esc-ai/roadmap.yaml` — purpose, current stage,
+direction, durable decisions) is durable, human-editable context, not per-initiative
+state: set it directly (`roadmap show`/`roadmap set`, or "Configure system" → "Show /
+set project roadmap"), or let it evolve through the AI-mediated planning conversation
+offered during single-repository `plan draft` (which now shows current vs. proposed
+values before asking to save). Every adapter's real execution prompt includes it when
+present — this is a repository-level fact every task in that repository sees, not
+just the next planning conversation's seed.
 
 `task run` and `promote-checkpoint` follow the same preview-then-`--yes` pattern:
 without `--yes` they print what would happen (objective, components, and — for
