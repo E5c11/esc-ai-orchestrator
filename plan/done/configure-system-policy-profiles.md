@@ -1,7 +1,24 @@
 # Configure System — Policy Profile Authoring and Selection — Plan
 
-**Status:** Proposed
+**Status:** Implemented
 **Date:** 2026-08-04
+**Implemented:** 2026-08-04 -- built exactly as designed: `POLICY_PROFILES`
+(`escape_ai_cli.py`) ships `standard-autonomous` (today's old hardcoded default,
+renamed) and `readonly-review`; `set_default_policy`/`default_policy_id`
+(esc-ai-execution-framework `registry.py`) store/read `system.yaml`'s new
+`default_policy` field, validated as a non-empty string; `resolve_default_policy`
+replaces the old `default_policy()`, falling back to `standard-autonomous` when
+unset or stale; "Configure system" gained a fourth submenu action
+(`configure_policy_interactive`), and `escape-ai policy show`/`policy set
+<profile-id>` mirror it non-interactively, matching the "equivalent non-
+interactive subcommands are mandatory" rule this CLI already follows everywhere
+else. Also fixed a real, independent bug this change would otherwise have made
+worse: `render_execution_preview`'s trailing Policy line unconditionally claimed
+"full autonomy" regardless of which policy was actually passed in (or even
+whether one was) -- now shows the real profile id when known. Full suites green
+in both repos (503 tests, esc-ai-execution-framework; 223 tests,
+esc-ai-orchestrator), including an end-to-end test proving `task run`'s preview
+reflects a configured `readonly-review` default with the correct restricted scope.
 **Objective:** Let "Configure system" author or select a named `policy.yaml` profile
 as the default applied when planning/executing a task, closing the gap
 `cohesive-system-integration-and-onboarding.md` named but

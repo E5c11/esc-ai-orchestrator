@@ -33,9 +33,9 @@ it does not require the HTTP daemon to be running; it talks to the same `Store` 
 `esc_exec` onboarding logic in-process.
 
 ```bash
-escape-ai                      # interactive menu; "Onboard a repository" and "Plan
-                                # new work" are implemented, the other four items say
-                                # so and exit cleanly rather than faking anything
+escape-ai                      # interactive menu; all six top-level items are implemented
+                                # (Onboard a repository, Plan new work, Resume active work,
+                                # Observe a run, Configure system, Validate the system)
 
 escape-ai repository add <id> <path>
 escape-ai repository analyze <id-or-path>       # read-only proposal, safe to re-run
@@ -54,6 +54,11 @@ escape-ai plan ready <initiative-id>                      # tasks in this initia
 escape-ai provider auth <name> [--route subscription|api-key]   # connect an AI provider once;
                                                                  # required before `task run`
                                                                  # can submit anything for real
+
+escape-ai policy show                                     # the default policy profile a task
+                                                            # starts from (falls back to
+                                                            # standard-autonomous if unset)
+escape-ai policy set <profile-id>                          # standard-autonomous | readonly-review
 
 escape-ai resume [--json]                                 # active work across registered
                                                            # repositories: latest run status,
@@ -101,10 +106,14 @@ Workspace defaults to `kind: worktree` — the agent edits a disposable git work
 not the live checkout, so an unanticipated change is contained and reviewable via
 `task promote-checkpoint` rather than needing to be prevented mid-run; this is a
 permanent default, not a placeholder. Adapter resolves to whichever provider is
-actually connected via `provider auth`. Policy is still a genuine placeholder — a
-conservative, read-only default pending real "Configure system" support — and
-`task run`'s preview output says so explicitly rather than presenting it as
-finished configuration.
+actually connected via `provider auth`. Policy resolves to whichever named profile
+is configured as the default (`policy show`/`policy set`, or "Configure system" →
+"Show / select default policy") — falling back to `standard-autonomous` (full
+read/edit/execute/network autonomy, contained by the hard-deny list and disposable
+worktree isolation, not per-path scoping) if nothing has been configured yet, so an
+installation that never touches this behaves exactly as it always has.
+`external_paths` scoping and budget/cost limits are still unbuilt for every
+profile — see `plan/done/pre-flight-consent-and-bounded-autonomy.md`.
 
 Endpoints:
 

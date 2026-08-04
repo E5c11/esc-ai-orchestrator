@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import shutil
@@ -34,7 +35,8 @@ from esc_exec.planning import (
 )
 from esc_exec.registry import (
     KNOWN_PROVIDERS, SUBSCRIPTION_CAPABLE_PROVIDERS, active_provider, add_route,
-    default_registry_path, read_registry, resolve_route, set_provider,
+    default_policy_id, default_registry_path, read_registry, resolve_route,
+    set_default_policy, set_provider,
 )
 from esc_exec.roadmap import load_project_roadmap, save_project_roadmap
 from esc_exec.yaml_io import load_yaml
@@ -214,6 +216,20 @@ def render_provider_status(provider: dict[str, Any] | None) -> str:
     return f"Active provider: {provider['id']} ({provider['route']})" if provider else "No provider connected yet."
 
 
+def render_policy_status(profile_id: str | None) -> str:
+    """
+    `profile_id` is the registry's raw configured value (may be None if unset, or
+    a stale id no longer in POLICY_PROFILES) -- rendered plainly here rather than
+    resolved, so a stale configured value is visible as itself rather than
+    silently masked by resolve_default_policy's fallback.
+    """
+    if profile_id is None:
+        return f"No default policy configured yet -- falls back to `{DEFAULT_POLICY_PROFILE_ID}`."
+    if profile_id not in POLICY_PROFILES:
+        return f"Configured default policy `{profile_id}` is not a known profile -- falls back to `{DEFAULT_POLICY_PROFILE_ID}`."
+    return f"Default policy: `{profile_id}` -- {POLICY_PROFILES[profile_id]['policy']['description']}"
+
+
 def render_repository_list(repository_ids: list[str], registry: Path) -> str:
     if not repository_ids:
         return "No repositories registered yet."
@@ -323,8 +339,10 @@ def render_execution_preview(
             lines.append(f"Scope: {scope_text} (already consented on {prior_consent_record['granted_at']}).")
         else:
             lines.append(f"Scope: this run will be granted -- {scope_text}.")
+    policy_id = policy_document.get("policy", {}).get("id") if policy_document is not None else None
+    policy_label = f"`{policy_id}` -- " if policy_id else ""
     lines.append(
-        "Policy: full autonomy within the granted categories, contained by the "
+        f"Policy: {policy_label}full autonomy within the granted categories, contained by the "
         "hard-deny list and disposable worktree isolation (external_paths scoping "
         "and budget/cost limits are still unbuilt -- see plan/done/pre-flight-"
         "consent-and-bounded-autonomy.md)."
@@ -512,13 +530,17 @@ def validate_system(registry: Path) -> dict[str, list[ValidationResult] | str]:
 
 
 # ---------------------------------------------------------------------------
-# Execution and resumption -- Phase 8. Workspace/adapter defaults below are
-# PLACEHOLDERS pending real "Configure system" support (not built yet, still a stub
-# menu item) for anything *beyond* the category-level grant -- external_paths
-# scoping and budget/cost limits (see plan/done/pre-flight-consent-and-bounded-
-# autonomy.md's still-open sub-questions in items 3 and 6) aren't enforced yet.
-# The category-level grant itself is not a placeholder: per that plan's layers
-# 1-4, a task is granted read+edit+execute+network outright (not fine-grained
+# Execution and resumption -- Phase 8. Workspace default below is a placeholder
+# only in the sense that it's a fixed choice (kind: worktree), not that it's
+# unfinished -- see its own docstring. Which policy profile a task starts from
+# is real, named, and configurable (see POLICY_PROFILES/resolve_default_policy
+# above and "Configure system" -> "Show / select default policy"); what remains
+# a genuine gap is anything *beyond* the category-level grant every profile
+# still shares -- external_paths scoping and budget/cost limits (see
+# plan/done/pre-flight-consent-and-bounded-autonomy.md's still-open sub-
+# questions in items 3 and 6) aren't enforced yet. The category-level grant
+# itself is not a placeholder: per that plan's layers 1-4, a task is granted
+# whatever categories its active profile allows outright (not fine-grained
 # per-path/per-action -- the plan's own "Non-goals" rejected that shape after
 # finding real tasks legitimately wander outside their declared component
 # scope), contained by HARD_DENY_SETTINGS (claude_code_adapter.py) and
@@ -594,33 +616,74 @@ def resolve_runtime(provider: dict[str, Any], registry: Path, opencode_server: s
     return OpenCodeRuntime(opencode_server, registry)
 
 
-def default_policy() -> dict[str, Any]:
-    """
-    Full read+edit+execute+network autonomy for a task run, per
-    plan/done/pre-flight-consent-and-bounded-autonomy.md layers 1-2 -- one coarse
-    category-level grant, not a fine-grained per-path/per-action schema (the plan's
-    own "Non-goals" rejected that shape: real tasks legitimately discover they need
-    to touch code outside their declared component scope, and a strict allowlist
-    would just block the move a task legitimately needs to make). Safety comes from
-    layer 3 (HARD_DENY_SETTINGS in claude_code_adapter.py -- a short, universal,
-    always-on deny list for categorically hazardous operations regardless of a
-    task's grant) and layer 4 (disposable worktree isolation, default_workspace
-    above) -- not from withholding categories up front. `external_paths` stays
-    denied (no per-call path-scoping mechanism exists yet -- tools_for_policy's own
-    docstring notes this isn't enforced by category alone). `--yes` on `task run`
-    is the actual human consent gate, unchanged by this default.
-    """
-    return {
+# Named, built-in policy profiles a task can start from by default (see
+# plan/done/configure-system-policy-profiles.md) -- a small, fixed, shipped set,
+# not free-form user-authored YAML (see that plan's Non-goals): the actual gap
+# being closed is "there was only ever one hardcoded choice," not "there's no way
+# to author an arbitrary policy document" (hand-editing policy.yaml directly
+# already covers that, same as system.yaml itself).
+#
+# "standard-autonomous" is exactly the grant this system has always defaulted to
+# (previously the sole, hardcoded return value of a `default_policy()` function
+# with this same id under its old name, "full-autonomy") -- see
+# plan/done/pre-flight-consent-and-bounded-autonomy.md layers 1-2 for why a coarse
+# category-level grant, not a fine-grained per-path/per-action schema, is the
+# right shape: real tasks legitimately discover they need to touch code outside
+# their declared component scope, and a strict allowlist would just block the
+# move a task legitimately needs to make. Safety comes from layer 3
+# (HARD_DENY_SETTINGS in claude_code_adapter.py) and layer 4 (disposable worktree
+# isolation, default_workspace above), not from withholding categories up front.
+# `external_paths` stays denied for every profile below (no per-call path-scoping
+# mechanism exists yet). `--yes` on `task run` is the actual human consent gate,
+# unchanged by which profile is active.
+#
+# "readonly-review" promotes esc-ai-execution-framework's own
+# examples/contracts/policy.yaml from a schema-shape example to a real, selectable
+# option -- for investigation/review tasks that should never write or reach the
+# network.
+POLICY_PROFILES: dict[str, dict[str, Any]] = {
+    "standard-autonomous": {
         "schema_version": 1,
         "policy": {
-            "id": "full-autonomy",
+            "id": "standard-autonomous",
             "description": (
                 "Full read/edit/execute/network autonomy within this task, contained by "
                 "the hard-deny list and disposable worktree isolation, not per-path scoping."
             ),
         },
         "permissions": {"read": "allow", "edit": "allow", "execute": "allow", "network": "allow", "external_paths": "deny"},
-    }
+    },
+    "readonly-review": {
+        "schema_version": 1,
+        "policy": {
+            "id": "readonly-review",
+            "description": "Permit repository inspection without mutation or external access.",
+        },
+        "permissions": {"read": "allow", "edit": "deny", "execute": "ask", "network": "deny", "external_paths": "deny"},
+        "limits": {"max_parallel_agents": 1, "max_run_seconds": 900},
+        "approvals": ["execute"],
+    },
+}
+
+DEFAULT_POLICY_PROFILE_ID = "standard-autonomous"
+
+
+def resolve_default_policy(registry: Path) -> dict[str, Any]:
+    """
+    Reads the registry's configured default policy profile (see "Configure
+    system" -> "Show / select default policy") and falls back to
+    DEFAULT_POLICY_PROFILE_ID if none is configured, or if a configured id no
+    longer names a known profile (e.g. an older escape-ai version's profile set
+    once offered something this version doesn't) -- an installation with nothing
+    configured behaves exactly as this system always has, no silent behavior
+    change on upgrade. Returns a fresh copy every call: POLICY_PROFILES is the
+    canonical in-memory definition and must never be mutated by a caller that
+    embeds the result into a task's contracts.
+    """
+    profile_id = default_policy_id(registry)
+    if profile_id not in POLICY_PROFILES:
+        profile_id = DEFAULT_POLICY_PROFILE_ID
+    return copy.deepcopy(POLICY_PROFILES[profile_id])
 
 
 # Per-provider subscription-route CLI info: static data only (which binary, how to
@@ -822,7 +885,7 @@ def execute_task(
         "task": load_yaml(task_path),
         "workspace": default_workspace(repository_id),
         "adapter": default_adapter(provider),
-        "policy": default_policy(),
+        "policy": resolve_default_policy(registry),
     }
     attempt = store.record_attempt(task_id)
     scheduler = Scheduler(store, runtime or resolve_runtime(provider, registry, opencode_server), registry)
@@ -2002,13 +2065,39 @@ def configure_provider_interactive(registry: Path) -> None:
     _pick_and_connect_provider_interactive(registry)
 
 
+def configure_policy_interactive(registry: Path) -> None:
+    """
+    "Configure system" -> "Show / select default policy" -- same shape as
+    configure_provider_interactive: leads with current status, then offers a
+    change. Only the fixed POLICY_PROFILES set is offered (see that dict's own
+    comment for why this doesn't build a free-form authoring form).
+    """
+    current = default_policy_id(registry)
+    print(render_policy_status(current))
+    if not confirm("Select a different default policy?" if current else "Select a default policy now?"):
+        return
+    profile_ids = list(POLICY_PROFILES)
+    choice = select_menu(
+        "Policy profiles:",
+        [f"{profile_id} -- {POLICY_PROFILES[profile_id]['policy']['description']}" for profile_id in profile_ids],
+    )
+    if choice is None:
+        return
+    selected = profile_ids[choice]
+    set_default_policy(registry, selected)
+    print(f"Default policy set to `{selected}`.")
+
+
 def run_configure_interactive(registry: Path) -> int:
     while True:
         choice = select_menu(
             "Configure system:",
-            ["Show current provider", "Connect / switch provider", "List registered repositories", "Back"],
+            [
+                "Show current provider", "Connect / switch provider", "List registered repositories",
+                "Show / select default policy", "Back",
+            ],
         )
-        if choice is None or choice == 3:
+        if choice is None or choice == 4:
             return 0
         if choice == 0:
             print(render_provider_status(active_provider(registry)))
@@ -2016,6 +2105,8 @@ def run_configure_interactive(registry: Path) -> int:
             configure_provider_interactive(registry)
         elif choice == 2:
             print(render_repository_list(registered_repository_ids(registry), registry))
+        elif choice == 3:
+            configure_policy_interactive(registry)
 
 
 def _resume_item_label(item: dict[str, Any]) -> str:
@@ -2086,7 +2177,7 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
                 print(f"  - {blocker}")
         print(render_execution_preview(
             repository_id, task_id, load_yaml(task_path), provider,
-            default_policy(), prior_consent(store, task_id),
+            resolve_default_policy(registry), prior_consent(store, task_id),
         ))
         if not confirm("Execute this task now?"):
             print("Cancelled -- nothing was executed.")
@@ -2200,6 +2291,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--route", choices=["subscription", "api-key"], default=None,
         help="Defaults to subscription for claude, api-key for everyone else",
     )
+
+    policy = subcommands.add_parser("policy", help="Show or select the default policy profile")
+    policy_commands = policy.add_subparsers(dest="policy_command", required=True)
+    policy_commands.add_parser("show")
+    policy_set = policy_commands.add_parser("set")
+    policy_set.add_argument("profile_id", choices=list(POLICY_PROFILES))
 
     return parser
 
@@ -2360,7 +2457,7 @@ def _dispatch_task(args: argparse.Namespace, store: Store, registry: Path) -> in
         provider = active_provider(registry)
         print(render_execution_preview(
             repository_id, args.task_id, task_document, provider,
-            default_policy(), prior_consent(store, args.task_id),
+            resolve_default_policy(registry), prior_consent(store, args.task_id),
         ))
         if not args.yes:
             print("Preview only -- re-run with --yes to actually execute.")
@@ -2443,6 +2540,17 @@ def _dispatch_provider(args: argparse.Namespace, store: Store, registry: Path) -
     return 1
 
 
+def _dispatch_policy(args: argparse.Namespace, store: Store, registry: Path) -> int:
+    if args.policy_command == "show":
+        print(render_policy_status(default_policy_id(registry)))
+        return 0
+    if args.policy_command == "set":
+        set_default_policy(registry, args.profile_id)
+        print(f"SET        default policy to `{args.profile_id}`.")
+        return 0
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     registry = args.registry or default_registry_path()
@@ -2459,6 +2567,8 @@ def main(argv: list[str] | None = None) -> int:
         return _dispatch_resume(args, store, registry)
     if args.command == "provider":
         return _dispatch_provider(args, store, registry)
+    if args.command == "policy":
+        return _dispatch_policy(args, store, registry)
     return 1
 
 

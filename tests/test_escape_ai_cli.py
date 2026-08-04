@@ -1843,8 +1843,10 @@ class ExecutionRenderingTests(unittest.TestCase):
 
     def test_render_execution_preview_states_full_autonomy_policy(self):
         # Since plan/done/pre-flight-consent-and-bounded-autonomy.md's category-level
-        # grant landed, default_policy() is no longer read-only-by-placeholder -- the
-        # preview's trailing Policy line should say so, not call it a placeholder.
+        # grant landed, resolve_default_policy() is no longer read-only-by-placeholder
+        # -- the preview's trailing Policy line should say so, not call it a
+        # placeholder. No policy_document is passed here, so this exercises the
+        # generic (no-named-profile-known) branch of that line.
         task_document = {
             "task": {"objective": "Add CSV export."},
             "scope": {"components": ["content"]},
@@ -2877,7 +2879,7 @@ class PriorConsentTests(unittest.TestCase):
             run(["plan", "answer", "feature-export", str(plan_answers_file)])
             run(["plan", "apply", "feature-export"])
 
-            categories = cli.granted_categories(cli.default_policy())
+            categories = cli.granted_categories(cli.resolve_default_policy(registry))
             self.assertIsNone(cli.prior_consent(store, "feature-export"))
             cli.execute_task(
                 store, registry, "repo", repository_dir, "feature-export",
@@ -2891,7 +2893,7 @@ class PriorConsentTests(unittest.TestCase):
                 repository_dir / ".esc-ai" / "workflows" / "active" / "feature-export" / "task.yaml"
             )
             rendered = cli.render_execution_preview(
-                "repo", "feature-export", task_document, None, cli.default_policy(), recorded,
+                "repo", "feature-export", task_document, None, cli.resolve_default_policy(registry), recorded,
             )
             self.assertIn("already consented on 2026-07-24T00:00:00Z", rendered)
 
@@ -2990,6 +2992,24 @@ class ConfigureSystemRenderingTests(unittest.TestCase):
         rendered = cli.render_provider_status({"id": "claude", "route": "subscription"})
         self.assertEqual("Active provider: claude (subscription)", rendered)
 
+    def test_render_policy_status_none_configured(self):
+        rendered = cli.render_policy_status(None)
+        self.assertIn("No default policy configured yet", rendered)
+        self.assertIn(cli.DEFAULT_POLICY_PROFILE_ID, rendered)
+
+    def test_render_policy_status_known_profile(self):
+        rendered = cli.render_policy_status("readonly-review")
+        self.assertIn("Default policy: `readonly-review`", rendered)
+        self.assertIn(cli.POLICY_PROFILES["readonly-review"]["policy"]["description"], rendered)
+
+    def test_render_policy_status_unknown_profile_falls_back(self):
+        # A stale registry value from a version whose profile set no longer
+        # matches -- surfaced honestly rather than silently swapped for the
+        # fallback's own status text.
+        rendered = cli.render_policy_status("some-removed-profile")
+        self.assertIn("`some-removed-profile` is not a known profile", rendered)
+        self.assertIn(cli.DEFAULT_POLICY_PROFILE_ID, rendered)
+
     def test_render_repository_list_empty(self):
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
@@ -3012,6 +3032,87 @@ class ConfigureSystemRenderingTests(unittest.TestCase):
             cli.add_route(registry, "repositories", "ghost", root / "does-not-exist")
             rendered = cli.render_repository_list(["ghost"], registry)
             self.assertIn("ghost -> UNRESOLVABLE", rendered)
+
+
+class ResolveDefaultPolicyTests(unittest.TestCase):
+    """plan/done/configure-system-policy-profiles.md: an installation with
+    nothing configured must behave exactly as this system always has."""
+
+    def test_unset_falls_back_to_standard_autonomous(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            resolved = cli.resolve_default_policy(registry)
+            self.assertEqual("standard-autonomous", resolved["policy"]["id"])
+            self.assertEqual(cli.POLICY_PROFILES["standard-autonomous"], resolved)
+
+    def test_configured_profile_is_resolved(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            cli.set_default_policy(registry, "readonly-review")
+            resolved = cli.resolve_default_policy(registry)
+            self.assertEqual("readonly-review", resolved["policy"]["id"])
+
+    def test_stale_configured_profile_falls_back(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            cli.set_default_policy(registry, "some-removed-profile")
+            resolved = cli.resolve_default_policy(registry)
+            self.assertEqual("standard-autonomous", resolved["policy"]["id"])
+
+    def test_result_is_a_fresh_copy_each_time(self):
+        # POLICY_PROFILES is the canonical in-memory definition -- a caller
+        # mutating what it gets back must never corrupt later resolutions.
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            first = cli.resolve_default_policy(registry)
+            first["permissions"]["network"] = "deny"
+            second = cli.resolve_default_policy(registry)
+            self.assertEqual("allow", second["permissions"]["network"])
+
+
+class ConfigurePolicyInteractiveTests(unittest.TestCase):
+    def test_declining_leaves_registry_unset(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            responses = iter(["2"])  # decline
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                cli.configure_policy_interactive(registry)
+            finally:
+                builtins.input = original_input
+            self.assertIsNone(cli.default_policy_id(registry))
+
+    def test_selecting_a_profile_records_it(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            profile_ids = list(cli.POLICY_PROFILES)
+            responses = iter(["1", str(profile_ids.index("readonly-review") + 1)])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                cli.configure_policy_interactive(registry)
+            finally:
+                builtins.input = original_input
+            self.assertEqual("readonly-review", cli.default_policy_id(registry))
+
+    def test_reachable_and_changeable_from_the_configure_submenu(self):
+        with TemporaryDirectory() as temp:
+            registry = Path(temp) / "registry.yaml"
+            profile_ids = list(cli.POLICY_PROFILES)
+            responses = iter([
+                "4",  # Show / select default policy
+                "1",  # select a different one now
+                str(profile_ids.index("readonly-review") + 1),
+                "5",  # back
+            ])
+            original_input = builtins.input
+            builtins.input = lambda prompt="": next(responses)
+            try:
+                cli.run_configure_interactive(registry)
+            finally:
+                builtins.input = original_input
+            self.assertEqual("readonly-review", cli.default_policy_id(registry))
 
 
 class RunDetailTests(unittest.TestCase):
@@ -3079,7 +3180,7 @@ class ConfigureSystemInteractiveTests(unittest.TestCase):
     def test_shows_no_provider_and_no_repositories_then_backs_out(self):
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
-            responses = iter(["1", "3", "4"])  # show provider, list repos, back
+            responses = iter(["1", "3", "5"])  # show provider, list repos, back
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
@@ -3096,7 +3197,7 @@ class ConfigureSystemInteractiveTests(unittest.TestCase):
     def test_declining_to_connect_leaves_provider_unset(self):
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
-            responses = iter(["2", "2", "4"])  # connect/switch -> decline -> back
+            responses = iter(["2", "2", "5"])  # connect/switch -> decline -> back
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
@@ -3109,7 +3210,7 @@ class ConfigureSystemInteractiveTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
             # connect/switch -> confirm -> claude -> subscription -> back
-            responses = iter(["2", "1", "1", "1", "4"])
+            responses = iter(["2", "1", "1", "1", "5"])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             original_available, original_status = cli.claude_cli_available, cli.claude_auth_status
@@ -3587,6 +3688,77 @@ class ProviderTests(unittest.TestCase):
             finally:
                 cli.suggest_onboarding_answers = original_suggest
             self.assertEqual({}, result)
+
+
+class PolicyDispatchTests(unittest.TestCase):
+    """plan/done/configure-system-policy-profiles.md: escape-ai policy show/set,
+    the non-interactive equivalent of "Configure system" -> "Show / select
+    default policy" -- mandatory for CI/scripts per the same discipline every
+    other guided flow in this CLI already follows."""
+
+    def _run(self, db, registry, argv):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+        return code, buffer.getvalue()
+
+    def test_show_with_nothing_configured(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            code, out = self._run(db, registry, ["policy", "show"])
+            self.assertEqual(0, code)
+            self.assertIn("No default policy configured yet", out)
+
+    def test_set_then_show_round_trips(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            code, out = self._run(db, registry, ["policy", "set", "readonly-review"])
+            self.assertEqual(0, code)
+            self.assertIn("SET        default policy to `readonly-review`", out)
+            code, out = self._run(db, registry, ["policy", "show"])
+            self.assertEqual(0, code)
+            self.assertIn("Default policy: `readonly-review`", out)
+
+    def test_set_rejects_an_unknown_profile_id(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            with self.assertRaises(SystemExit) as ctx:
+                with redirect_stderr(io.StringIO()):
+                    cli.main(["--db", str(db), "--registry", str(registry), "policy", "set", "made-up-profile"])
+            self.assertEqual(2, ctx.exception.code)
+
+    def test_task_run_preview_reflects_the_configured_default(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db, registry = root / "db.sqlite", root / "registry.yaml"
+            repository_dir = root / "repo-checkout"
+            _make_gradle_repository(repository_dir)
+            self._run(db, registry, ["repository", "add", "repo", str(repository_dir)])
+            self._run(db, registry, ["repository", "analyze", "repo", "--json"])
+            answers_file = root / "answers.json"
+            answers_file.write_text(json.dumps({"content": {"purpose": "Owns content."}}), encoding="utf-8")
+            self._run(db, registry, ["repository", "answer", "repo", str(answers_file)])
+            self._run(db, registry, ["repository", "apply", "repo"])
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Add CSV export.", "repositories": ["repo"],
+            }), encoding="utf-8")
+            self._run(db, registry, ["plan", "draft", "feature-export", str(request_file)])
+            plan_answers_file = root / "plan-answers.json"
+            plan_answers_file.write_text(json.dumps({
+                "components": {"repo": ["content"]}, "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+            }), encoding="utf-8")
+            self._run(db, registry, ["plan", "answer", "feature-export", str(plan_answers_file)])
+            self._run(db, registry, ["plan", "apply", "feature-export"])
+
+            self._run(db, registry, ["policy", "set", "readonly-review"])
+            code, out = self._run(db, registry, ["task", "run", "repo", "feature-export"])
+            self.assertEqual(0, code)
+            self.assertIn("Policy: `readonly-review`", out)
+            self.assertIn("Scope: this run will be granted -- read.", out)
 
 
 class CollectAnswerTests(unittest.TestCase):
