@@ -78,8 +78,12 @@ actually get written — manifests, indexes, verification/architecture profiles,
 generates and manages lives under `.esc-ai/`, component manifests flat and keyed by
 stable component ID); `.esc-ai/workflows/active/<task-id>/task.yaml`
 and `README.md` for planning. A plan spanning more than one repository generates one
-cross-linked task per repository — each depends on the previous one in declared
-order — validating every repository/component reference before writing anything to
+cross-linked task per repository, with a `depends_on` question per repository asking
+which others in the initiative must complete first — defaulting to the repository
+immediately before it in declared order if left unanswered (so an initiative with no
+real branching still gets the old straight-chain behavior for free), but a genuine
+graph (branching, diamonds, independent subgraphs) is fully supported, not just a
+chain — validating every repository/component reference before writing anything to
 any of them. Nothing is ever committed automatically — both the interactive and
 non-interactive paths print exactly which files to review and commit yourself.
 

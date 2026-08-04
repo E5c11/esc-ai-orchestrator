@@ -144,19 +144,29 @@ class PlanningRenderingTests(unittest.TestCase):
         self.assertIn("Nothing has been committed", rendered)
         self.assertNotIn("Dependency chain", rendered)
 
-    def test_render_plan_result_prints_dependency_chain_when_given(self):
-        """plan/done/run-outcome-surfacing.md finding #7: a multi-repo plan's
-        resolved chain should be visible in the apply output itself."""
+    def test_render_plan_result_prints_dependency_graph_when_given(self):
+        """plan/done/run-outcome-surfacing.md finding #7 (generalized from a single
+        chain to a real graph by plan/active/multi-repository-dependency-graph-
+        planning.md): a multi-repo plan's resolved dependencies should be visible
+        in the apply output itself, including a real branching case, not just a
+        chain."""
         result = {
             "ampm-backend": [".esc-ai/workflows/active/task/task.yaml"],
             "ampm-contracts": [".esc-ai/workflows/active/task/task.yaml"],
+            "ampm-kmp": [".esc-ai/workflows/active/task/task.yaml"],
         }
-        rendered = cli.render_plan_result(result, ["ampm-backend", "ampm-contracts", "ampm-kmp"])
-        self.assertIn("Dependency chain: ampm-backend -> ampm-contracts -> ampm-kmp", rendered)
+        dependency_graph = {
+            "ampm-contracts": [], "ampm-backend": ["ampm-contracts"], "ampm-kmp": ["ampm-contracts", "ampm-backend"],
+        }
+        rendered = cli.render_plan_result(result, dependency_graph)
+        self.assertIn("Dependency graph:", rendered)
+        self.assertIn("ampm-contracts: no dependencies", rendered)
+        self.assertIn("ampm-backend: depends on ampm-contracts", rendered)
+        self.assertIn("ampm-kmp: depends on ampm-contracts, ampm-backend", rendered)
 
-    def test_render_plan_result_omits_chain_line_when_none(self):
+    def test_render_plan_result_omits_graph_section_when_none(self):
         rendered = cli.render_plan_result({"repo-a": []}, None)
-        self.assertNotIn("Dependency chain", rendered)
+        self.assertNotIn("Dependency graph", rendered)
 
 
 class TaskIdSuggestionsTests(unittest.TestCase):
@@ -462,6 +472,63 @@ class PlanningDispatchTests(unittest.TestCase):
             self.assertEqual("feature-cross", task_a["task"]["initiative"]["id"])
             self.assertNotIn("depends_on", task_a["task"]["initiative"])
             self.assertEqual(["repo-a/feature-cross-repo-a"], task_b["task"]["initiative"]["depends_on"])
+
+    def test_multi_repository_plan_accepts_an_explicit_branching_dependency_graph(self):
+        """plan/active/multi-repository-dependency-graph-planning.md: an explicit
+        `depends_on` answer produces a real graph (here, repo-c depending on both
+        of the other two), not just the declared-order straight chain."""
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            db = root / "db.sqlite"
+            registry = root / "registry.yaml"
+            repo_a, repo_b, repo_c = root / "repo-a", root / "repo-b", root / "repo-c"
+            for repo in (repo_a, repo_b, repo_c):
+                _make_gradle_repository(repo)
+
+            def run(argv):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+                return code, buffer.getvalue()
+
+            self._onboard(run, "repo-a", repo_a, "Owns repo-a content.")
+            self._onboard(run, "repo-b", repo_b, "Owns repo-b content.")
+            self._onboard(run, "repo-c", repo_c, "Owns repo-c content.")
+
+            request_file = root / "request.json"
+            request_file.write_text(json.dumps({
+                "work_type": "feature", "objective": "Cross-repo export.",
+                "repositories": ["repo-a", "repo-b", "repo-c"],
+            }), encoding="utf-8")
+            code, out = run(["plan", "draft", "feature-branch", str(request_file)])
+            self.assertEqual(0, code, out)
+            self.assertIn("Suggested dependency order (default if left unanswered):", out)
+
+            answers_file = root / "plan-answers.json"
+            answers_file.write_text(json.dumps({
+                "components": {"repo-a": ["content"], "repo-b": ["content"], "repo-c": ["content"]},
+                "depends_on": {"repo-a": [], "repo-b": [], "repo-c": ["repo-a", "repo-b"]},
+                "scope_boundary": "", "completion_conditions": ["done"], "rollout_needs": "",
+            }), encoding="utf-8")
+            run(["plan", "answer", "feature-branch", str(answers_file)])
+
+            code, out = run(["plan", "apply", "feature-branch"])
+            self.assertEqual(0, code, out)
+            self.assertIn("Dependency graph:", out)
+            self.assertIn("repo-a: no dependencies", out)
+            self.assertIn("repo-b: no dependencies", out)
+            self.assertIn("repo-c: depends on repo-a, repo-b", out)
+
+            from esc_exec.yaml_io import load_yaml
+            task_a = load_yaml(repo_a / ".esc-ai/workflows/active/feature-branch-repo-a/task.yaml")
+            task_b = load_yaml(repo_b / ".esc-ai/workflows/active/feature-branch-repo-b/task.yaml")
+            task_c = load_yaml(repo_c / ".esc-ai/workflows/active/feature-branch-repo-c/task.yaml")
+            self.assertNotIn("depends_on", task_a["task"]["initiative"])
+            self.assertNotIn("depends_on", task_b["task"]["initiative"])
+            self.assertEqual(
+                ["repo-a/feature-branch-repo-a", "repo-b/feature-branch-repo-b"],
+                task_c["task"]["initiative"]["depends_on"],
+            )
 
 
 class TopLevelMenuLoopTests(unittest.TestCase):
@@ -1366,7 +1433,11 @@ class PlanningInteractiveTests(unittest.TestCase):
 
             responses = iter([
                 "repo,repo-two", "Add a shared audit log.", "audit-log", "1",  # work type: feature
-                "content", "content", "No admin UI.", "Log entries recorded", "",
+                "content",  # repo components
+                "",         # repo depends_on (no predecessor)
+                "content",  # repo-two components
+                "",         # repo-two depends_on (blank -- accepts no explicit dependency)
+                "No admin UI.", "Log entries recorded", "",
                 "2",  # decline apply -- just checking the menu offered here
             ])
             original_input = builtins.input
@@ -2227,10 +2298,14 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             run(["plan", "answer", "feature-cross", str(answers_file)])
             code, out = run(["plan", "apply", "feature-cross"])
             self.assertEqual(0, code, out)
-            # plan/done/run-outcome-surfacing.md finding #7: the resolved chain is
-            # printed in the apply output itself, not just discoverable by reading
-            # task.yaml's depends_on by hand.
-            self.assertIn("Dependency chain: repo-a -> repo-b", out)
+            # plan/done/run-outcome-surfacing.md finding #7: the resolved dependency
+            # graph is printed in the apply output itself, not just discoverable by
+            # reading task.yaml's depends_on by hand. No explicit "depends_on"
+            # answer was supplied above, so this falls back to the declared-order
+            # chain (plan/active/multi-repository-dependency-graph-planning.md).
+            self.assertIn("Dependency graph:", out)
+            self.assertIn("repo-a: no dependencies", out)
+            self.assertIn("repo-b: depends on repo-a", out)
 
             # Parallel dispatch (headless-backdoor-mode.md follow-on): before anything
             # runs, only repo-a's task is ready -- repo-b's depends_on it.

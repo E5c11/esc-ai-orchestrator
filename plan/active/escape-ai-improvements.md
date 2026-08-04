@@ -17,7 +17,11 @@ itself. Where each finding landed:
   indistinguishable from a real one — also found to silently auto-advance dependent
   tasks, worse than originally described) →
   [`run-outcome-surfacing.md`](../done/run-outcome-surfacing.md) (**implemented**
-  2026-08-03)
+  2026-08-03). #7's other half — `plan apply` always chaining declared order,
+  never a real graph — was still open after that doc landed (see #7's own section
+  below); closed by
+  [`multi-repository-dependency-graph-planning.md`](../done/multi-repository-dependency-graph-planning.md)
+  (**implemented** 2026-08-04).
 - **#8**'s underlying `ampm-backend` bug (eager, non-conditional credential-backed
   bean crashing full-context tests) is a real issue in that repository, not
   escape-ai's — flagged back to it separately, not part of any escape-ai plan.
@@ -164,7 +168,7 @@ from scratch every time.
 
 ---
 
-## 7. `plan apply`'s straight-chain dependency ordering (already a known limitation, confirmed still current)
+## 7. `plan apply`'s straight-chain dependency ordering (RESOLVED 2026-08-04, see below)
 
 `BACKDOOR.md` already documents this, but confirming it's still exactly true as of this session:
 a multi-repo `plan apply` always chains tasks in the declared `repositories` list order (each
@@ -178,6 +182,13 @@ only find out by reading `task.yaml`'s `depends_on` field yourself or asking `pl
 still surprising on first contact — `plan draft`/`plan apply` output could print the resulting
 dependency chain explicitly (not just repositories-and-components) so it's visible without
 reading YAML.
+
+**Resolved 2026-08-04:** see
+[`multi-repository-dependency-graph-planning.md`](../done/multi-repository-dependency-graph-planning.md).
+`plan draft` now asks a `depends_on` question per repository (defaulting to the
+previous repository in declared order if left unanswered, reproducing this exact
+straight-chain behavior for anyone who doesn't need anything else), and
+`plan draft`/`plan apply` print the resulting graph explicitly either way.
 
 ---
 
