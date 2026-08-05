@@ -1,7 +1,23 @@
 # Architecture Guidance Reaching the Executing Agent — Plan
 
-**Status:** Proposed
+**Status:** Implemented (design sections 1-3, 5 -- real framework docs only)
 **Date:** 2026-08-05
+**Implemented:** 2026-08-05 -- `architecture_prompt_lines(component)`
+(`esc-ai-execution-framework/esc_exec/architecture_lookup.py`) renders one read
+instruction per resolved document, distinguishing stubs; wired into all three
+adapters' `_prompt()` (`claude_code_adapter.py`, `codex_adapter.py`,
+`opencode_adapter.py`) right after the existing per-component index-read line, same
+insertion point and call shape as `roadmap_prompt_line`. No manifest/schema change --
+purely reads data `build_task_context` already computed and previously discarded, so
+every already-onboarded component benefits immediately. Parity tests added per
+adapter (end-to-end through `.execute()`, asserting the doc path/id reach
+`client.prompts[0]`, mirroring how the roadmap wiring was verified) plus unit tests
+for the helper itself. Full suite green: esc-ai-execution-framework 511 -> 518.
+**Design section 4 (local architecture notes) was deliberately not built in this
+pass** -- per the design's own framing, a separate follow-on that first needs Open
+question 1 (persistence: component-manifest field vs. task-scoped) resolved before
+there's anything for a prompt-delivery fix to read. Local notes remain exactly where
+they were: rendered into the task README only, never reaching the agent.
 **Objective:** Close the gap where architecture-framework documents are resolved
 against a component's `architecture.profile_ids`, gated on (execution hard-stops if
 they're missing or still stubs), and written to `task-context.json` for provenance --
