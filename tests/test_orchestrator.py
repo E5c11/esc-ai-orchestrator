@@ -838,7 +838,7 @@ class OrchestratorTests(unittest.TestCase):
             add_route(registry, "repositories", "repo", repository_dir)
             self._register_architecture_framework(root, registry, [
                 {"id": "ORCH-BE-FEAT", "path": "feature-orchestrators/backend/feature.md",
-                 "layer": "feature-orchestrators", "requires": []},
+                 "layer": "feature-orchestrators", "requires": [], "status": "active"},
             ])
 
             class RecordingAdapter:
