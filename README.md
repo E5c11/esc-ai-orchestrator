@@ -7,6 +7,9 @@ This repository implements the portable contracts defined by
 `esc-ai-execution-framework`. It does not redefine those schemas or repository routing
 conventions.
 
+See [`VISION.md`](./VISION.md) for the product thesis future work should align to:
+deterministic, architecture-governed procedure over freeform AI exploration.
+
 ## Bootstrap architecture
 
 ```text
