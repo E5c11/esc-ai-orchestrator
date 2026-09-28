@@ -180,3 +180,8 @@ and orchestrator into unified repository onboarding and cross-repository plannin
 ```bash
 python -m unittest discover -v
 ```
+
+## License
+
+Licensed under the [Apache License, Version 2.0](./LICENSE). Maintained by Emmanuel
+Conradie / Black Arrows Consulting.
