@@ -17,6 +17,7 @@ from esc_exec.registry import active_provider
 from esc_orchestrator.application.repositories import (
     analyze,
     apply_answers,
+    repository_map,
     resolve_repository,
 )
 from esc_orchestrator.entrypoints.cli.interactive.configure import (
@@ -317,7 +318,7 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
         print(f"Apply failed: {exc}")
         return 1
     print(render_apply_result(result))
-    print(render_onboarding_map(repository_path))
+    print(render_onboarding_map(repository_map(repository_path)))
 
     try:
         choice = ask(f"\nPress Enter to plan new work for `{repository_id}` now, or anything else to return to the main menu:").strip()

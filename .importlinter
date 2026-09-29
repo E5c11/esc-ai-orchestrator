@@ -1,6 +1,7 @@
 [importlinter]
 root_packages =
     esc_orchestrator
+    esc_exec
 include_external_packages = True
 
 [importlinter:contract:layers]
@@ -46,3 +47,21 @@ forbidden_modules =
 ignore_imports =
     esc_orchestrator.application.providers -> esc_orchestrator.runtime
     esc_orchestrator.application.runs -> esc_orchestrator.scheduler
+
+[importlinter:contract:pure-renderers]
+name = Renderers are pure (PYEP-RENDER-01): no file, registry, git or process access
+type = forbidden
+source_modules = esc_orchestrator.entrypoints.cli.render
+forbidden_modules =
+    esc_exec.yaml_io
+    esc_exec.worktree
+    esc_exec.registry
+    esc_exec.manifests
+    esc_exec.checkpoints
+    subprocess
+    sqlite3
+    shutil
+# Direct imports only: render imports the pure `granted_categories` from esc_exec.claude_code_adapter,
+# a module that also spawns processes -- a pure helper living in a gateway module (an engine-side
+# finding; the fix is to move it), so transitive imports are not checked here.
+allow_indirect_imports = True

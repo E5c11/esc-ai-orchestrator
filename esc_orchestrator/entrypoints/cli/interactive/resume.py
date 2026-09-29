@@ -14,6 +14,8 @@ from esc_orchestrator.application.runs import (
     prior_consent,
     promote_checkpoint,
     run_detail,
+    run_worktree_diff,
+    worktree_diff,
 )
 from esc_orchestrator.entrypoints.cli.interactive.configure import (
     prompt_provider_setup_interactive,
@@ -52,7 +54,8 @@ def run_observe_interactive(store: Store, registry: Path) -> int:
     selected = items[choice]
     repository_id, task_id = selected["repository_id"], selected["task_id"]
     _, repository_path = resolve_repository(repository_id, registry)
-    print(render_run_detail(repository_id, task_id, run_detail(store, task_id), repository_path))
+    detail = run_detail(store, task_id)
+    print(render_run_detail(repository_id, task_id, detail, run_worktree_diff(detail, repository_path)))
     return 0
 
 
@@ -113,7 +116,7 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
         except ValueError as exc:
             print(f"Cannot promote: {exc}")
             return 1
-        print(render_checkpoint_candidate(candidate, repository_path))
+        print(render_checkpoint_candidate(candidate, worktree_diff(repository_path, task_id)))
         if not confirm("Promote this checkpoint into the durable workflow?"):
             print("Cancelled -- nothing was promoted.")
             return 0
@@ -122,7 +125,8 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
         return 0
 
     if action_choice == 2:
-        print(render_run_detail(repository_id, task_id, run_detail(store, task_id), repository_path))
+        detail = run_detail(store, task_id)
+        print(render_run_detail(repository_id, task_id, detail, run_worktree_diff(detail, repository_path)))
         return 0
 
     return 0

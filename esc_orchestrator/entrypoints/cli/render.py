@@ -1,16 +1,18 @@
+"""Pure text renderers for the escape-ai CLI: values in, strings out, no I/O (PYEP-RENDER-01).
+
+Over 400 lines (PYMOD-SIZE-01) by design: this module holds one concept -- turning already-computed
+values into human-readable text -- as 25 small, independent functions. Splitting it would scatter
+that one concept without reducing coupling. Enforced pure by the `pure-renderers` import contract.
+"""
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from esc_exec.claude_code_adapter import granted_categories
-from esc_exec.manifests import component_manifest_path, repository_manifest_path
 from esc_exec.model import ManifestState, ValidationResult
 from esc_exec.procedures import PROCEDURES
-from esc_exec.registry import resolve_route
-from esc_exec.worktree import diff_summary
-from esc_exec.yaml_io import load_yaml
+from esc_orchestrator.application.repositories import RepositoryLocation
 from esc_orchestrator.domain.intents import INTENT_SUMMARIES, INTENT_WORK_TYPES
 from esc_orchestrator.domain.policy_profiles import (
     DEFAULT_POLICY_PROFILE_ID,
@@ -116,31 +118,22 @@ def render_apply_result(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_onboarding_map(repository_path: Path) -> str:
+def render_onboarding_map(repository_map: dict[str, Any]) -> str:
     """
-    What onboarding actually produced, read directly from the generated
-    manifests -- not just the list of file paths render_apply_result shows.
-    This is "the map" -- what escape-ai now understands this repository to be,
-    the same information Plan new work's routing and task execution actually
-    read. Read from disk rather than passed in, so a user who hand-edits a
-    manifest (still the only editing path today -- no in-tool editor, an
-    explicit non-goal for now) always sees their real, current state, not a
-    stale snapshot from the apply call that just ran.
+    What onboarding actually produced -- "the map": what escape-ai now understands this
+    repository to be, the same information Plan new work's routing and task execution
+    actually read. Pure (PYEP-RENDER-01): `application.repositories.repository_map` reads the
+    generated manifests from disk, so a user who hand-edits a manifest always sees their real,
+    current state, not a stale snapshot from the apply call that just ran.
     """
-    repository = load_yaml(repository_manifest_path(repository_path))
-    lines = [f"\nRepository map for `{repository['repository']['id']}` ({repository['repository']['type']}):"]
-    for entry in repository.get("components", []):
-        component_id = entry["id"]
-        manifest = load_yaml(component_manifest_path(repository_path, component_id))
-        component = manifest.get("component", {})
-        purpose = component.get("purpose") or "(no purpose recorded)"
-        profile_ids = manifest.get("architecture", {}).get("profile_ids") or []
-        has_verification = bool(manifest.get("paths", {}).get("verification_profile"))
-        lines.append(f"\n  {component_id}  ({component.get('path')}, {manifest.get('build', {}).get('system')})")
-        lines.append(f"    purpose: {purpose}")
+    lines = [f"\nRepository map for `{repository_map['id']}` ({repository_map['type']}):"]
+    for component in repository_map["components"]:
+        lines.append(f"\n  {component['id']}  ({component['path']}, {component['build_system']})")
+        lines.append(f"    purpose: {component['purpose']}")
+        profile_ids = component["profile_ids"]
         lines.append(f"    architecture profiles: {', '.join(profile_ids) if profile_ids else '(none resolved)'}")
-        lines.append(f"    verification gates: {'declared' if has_verification else 'not built for this build system yet'}")
-    excluded = repository.get("excluded_components")
+        lines.append(f"    verification gates: {'declared' if component['has_verification'] else 'not built for this build system yet'}")
+    excluded = repository_map["excluded"]
     if excluded:
         lines.append(f"\n  Excluded from onboarding: {', '.join(excluded)}")
     lines.append(
@@ -221,16 +214,15 @@ def render_roadmap(existing_roadmap: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
-def render_repository_list(repository_ids: list[str], registry: Path) -> str:
-    if not repository_ids:
+def render_repository_list(locations: list[RepositoryLocation]) -> str:
+    if not locations:
         return "No repositories registered yet."
     lines = ["Registered repositories:"]
-    for repository_id in repository_ids:
-        try:
-            path = resolve_route(registry, "repositories", repository_id)
-            lines.append(f"  {repository_id} -> {path}")
-        except (KeyError, FileNotFoundError) as exc:
-            lines.append(f"  {repository_id} -> UNRESOLVABLE ({exc})")
+    for location in locations:
+        if location.error is None:
+            lines.append(f"  {location.id} -> {location.path}")
+        else:
+            lines.append(f"  {location.id} -> UNRESOLVABLE ({location.error})")
     return "\n".join(lines)
 
 
@@ -374,7 +366,7 @@ def render_execution_result(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_checkpoint_candidate(candidate: dict[str, Any], repository_path: Path | None = None) -> str:
+def render_checkpoint_candidate(candidate: dict[str, Any], worktree_diff: str = "") -> str:
     checkpoint, progress = candidate["checkpoint"], candidate["progress"]
     lines = [
         f"Checkpoint candidate from run {candidate['run_id']} -- status: {checkpoint['status']}",
@@ -386,15 +378,13 @@ def render_checkpoint_candidate(candidate: dict[str, Any], repository_path: Path
     # See plan/future/pre-flight-consent-and-bounded-autonomy.md layer 4: the
     # worktree diff is the review step for anything the task touched, surfaced
     # in the same preview a human already gets before deciding --yes.
-    if repository_path is not None:
-        summary = diff_summary(repository_path, checkpoint["task_id"])
-        if summary:
-            lines += ["Worktree diff:", *(f"  {line}" for line in summary.splitlines())]
+    if worktree_diff:
+        lines += ["Worktree diff:", *(f"  {line}" for line in worktree_diff.splitlines())]
     return "\n".join(lines)
 
 
 def render_run_detail(
-    repository_id: str, task_id: str, detail: dict[str, Any], repository_path: Path | None = None,
+    repository_id: str, task_id: str, detail: dict[str, Any], worktree_diff: str = "",
 ) -> str:
     run = detail["run"]
     if run is None:
@@ -416,7 +406,7 @@ def render_run_detail(
         lines += ["", "Verification summary:", json.dumps(detail["summary"], indent=2)]
 
     if detail["checkpoint"] is not None:
-        lines += ["", render_checkpoint_candidate(detail["checkpoint"], repository_path)]
+        lines += ["", render_checkpoint_candidate(detail["checkpoint"], worktree_diff)]
 
     return "\n".join(lines)
 

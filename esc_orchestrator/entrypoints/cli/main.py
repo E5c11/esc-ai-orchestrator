@@ -4,21 +4,22 @@ import sys
 
 from esc_exec.registry import default_registry_path
 from esc_orchestrator.domain.intents import INTENT_WORK_TYPES
-from esc_orchestrator.entrypoints.cli.dispatch import (
-    _dispatch_intent,
-    _dispatch_plan,
+from esc_orchestrator.entrypoints.cli.dispatch_system import (
     _dispatch_policy,
     _dispatch_provider,
     _dispatch_repository,
     _dispatch_resume,
     _dispatch_roadmap,
+)
+from esc_orchestrator.entrypoints.cli.dispatch_workflow import (
+    _dispatch_intent,
+    _dispatch_plan,
     _dispatch_task,
     _rewrite_legacy_plan_argv,
 )
 from esc_orchestrator.entrypoints.cli.interactive.menu import run_interactive
 from esc_orchestrator.entrypoints.cli.parser import build_parser
 from esc_orchestrator.store import Store
-
 
 # Command name -> handler. One entry per command (PYEP-DISPATCH-01): adding a command adds a row,
 # not another branch. Every intent verb shares one handler; the verb selects the procedure.

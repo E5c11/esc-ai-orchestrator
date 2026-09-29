@@ -2856,7 +2856,7 @@ class WorktreeCheckpointFlowTests(unittest.TestCase):
             candidate = cli.checkpoint_candidate(store, repository_dir, "feature-export")
             self.assertTrue(candidate["no_changes"])
             self.assertEqual("ready-to-resume", candidate["checkpoint"]["status"])
-            rendered = cli.render_checkpoint_candidate(candidate, repository_dir)
+            rendered = cli.render_checkpoint_candidate(candidate, cli.worktree_diff(repository_dir, "feature-export"))
             self.assertIn("produced no changes", rendered)
             outcome = cli.promote_checkpoint(repository_dir, "feature-export", candidate)
             self.assertIsNone(outcome)
@@ -2873,7 +2873,7 @@ class WorktreeCheckpointFlowTests(unittest.TestCase):
             candidate = cli.checkpoint_candidate(store, repository_dir, "feature-export")
             self.assertEqual("ready-to-resume", candidate["checkpoint"]["status"])
             self.assertTrue(candidate["worktree_merge_only"])
-            rendered = cli.render_checkpoint_candidate(candidate, repository_dir)
+            rendered = cli.render_checkpoint_candidate(candidate, cli.worktree_diff(repository_dir, "feature-export"))
             self.assertIn("Worktree diff:", rendered)
             self.assertIn("agent-output.txt", rendered)
 
@@ -3165,8 +3165,7 @@ class ConfigureSystemRenderingTests(unittest.TestCase):
 
     def test_render_repository_list_empty(self):
         with TemporaryDirectory() as temp:
-            registry = Path(temp) / "registry.yaml"
-            self.assertEqual("No repositories registered yet.", cli.render_repository_list([], registry))
+            self.assertEqual("No repositories registered yet.", cli.render_repository_list([]))
 
     def test_render_repository_list_shows_resolved_path(self):
         with TemporaryDirectory() as temp:
@@ -3174,7 +3173,7 @@ class ConfigureSystemRenderingTests(unittest.TestCase):
             registry = root / "registry.yaml"
             (root / "repo").mkdir()
             cli.add_route(registry, "repositories", "repo", root / "repo")
-            rendered = cli.render_repository_list(["repo"], registry)
+            rendered = cli.render_repository_list(cli.repository_locations(["repo"], registry))
             self.assertIn("repo ->", rendered)
             self.assertIn(str((root / "repo").resolve()), rendered)
 
@@ -3183,7 +3182,7 @@ class ConfigureSystemRenderingTests(unittest.TestCase):
             root = Path(temp)
             registry = root / "registry.yaml"
             cli.add_route(registry, "repositories", "ghost", root / "does-not-exist")
-            rendered = cli.render_repository_list(["ghost"], registry)
+            rendered = cli.render_repository_list(cli.repository_locations(["ghost"], registry))
             self.assertIn("ghost -> UNRESOLVABLE", rendered)
 
 

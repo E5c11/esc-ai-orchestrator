@@ -7,7 +7,10 @@ and tests reach for -- without holding any logic of its own.
 """
 from __future__ import annotations
 
-from esc_exec.claude_code_adapter import ClaudeCodeError, granted_categories  # noqa: F401
+from esc_exec.claude_code_adapter import (  # noqa: F401
+    ClaudeCodeError,
+    granted_categories,
+)
 from esc_exec.planning import WORK_TYPES  # noqa: F401
 from esc_exec.registry import (  # noqa: F401
     active_provider,
@@ -24,7 +27,11 @@ from esc_orchestrator.application.providers import (  # noqa: F401
     resolve_default_policy,
     resolve_runtime,
 )
-from esc_orchestrator.application.repositories import registered_repository_ids, validate_system  # noqa: F401
+from esc_orchestrator.application.repositories import (  # noqa: F401
+    registered_repository_ids,
+    repository_locations,
+    validate_system,
+)
 from esc_orchestrator.application.runs import (  # noqa: F401
     _task_id_suggestions,
     active_work,
@@ -33,10 +40,16 @@ from esc_orchestrator.application.runs import (  # noqa: F401
     prior_consent,
     promote_checkpoint,
     run_detail,
+    worktree_diff,
 )
 from esc_orchestrator.domain.intents import INTENT_WORK_TYPES  # noqa: F401
-from esc_orchestrator.domain.policy_profiles import DEFAULT_POLICY_PROFILE_ID, POLICY_PROFILES  # noqa: F401
-from esc_orchestrator.entrypoints.cli.dispatch import _rewrite_legacy_plan_argv  # noqa: F401
+from esc_orchestrator.domain.policy_profiles import (  # noqa: F401
+    DEFAULT_POLICY_PROFILE_ID,
+    POLICY_PROFILES,
+)
+from esc_orchestrator.entrypoints.cli.dispatch_workflow import (
+    _rewrite_legacy_plan_argv,  # noqa: F401
+)
 from esc_orchestrator.entrypoints.cli.interactive.configure import (  # noqa: F401
     configure_policy_interactive,
     configure_roadmap_interactive,
@@ -46,7 +59,9 @@ from esc_orchestrator.entrypoints.cli.interactive.configure import (  # noqa: F4
 from esc_orchestrator.entrypoints.cli.interactive.conversation import (  # noqa: F401
     run_planning_conversation_interactive,
 )
-from esc_orchestrator.entrypoints.cli.interactive.menu import run_interactive  # noqa: F401
+from esc_orchestrator.entrypoints.cli.interactive.menu import (
+    run_interactive,  # noqa: F401
+)
 from esc_orchestrator.entrypoints.cli.interactive.onboarding import (  # noqa: F401
     _collect_answer,
     run_onboarding_interactive,
@@ -86,7 +101,6 @@ from esc_orchestrator.entrypoints.cli.render import (  # noqa: F401
     render_work_types,
 )
 from esc_orchestrator.entrypoints.cli.terminal import _isatty, select_menu  # noqa: F401
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

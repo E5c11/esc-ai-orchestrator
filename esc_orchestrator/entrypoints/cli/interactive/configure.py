@@ -17,6 +17,7 @@ from esc_orchestrator.application.providers import (
 )
 from esc_orchestrator.application.repositories import (
     registered_repository_ids,
+    repository_locations,
     resolve_repository,
 )
 from esc_orchestrator.domain.policy_profiles import POLICY_PROFILES
@@ -170,7 +171,7 @@ def run_configure_interactive(registry: Path) -> int:
         elif choice == 1:
             configure_provider_interactive(registry)
         elif choice == 2:
-            print(render_repository_list(registered_repository_ids(registry), registry))
+            print(render_repository_list(repository_locations(registered_repository_ids(registry), registry)))
         elif choice == 3:
             configure_policy_interactive(registry)
         elif choice == 4:

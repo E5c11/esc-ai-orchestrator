@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from esc_exec.adapters import detect_build_system
 from esc_exec.dependencies import validate_dependency_graph
 from esc_exec.indexing import validate_indexes
-from esc_exec.manifests import validate_repository
+from esc_exec.manifests import (
+    component_manifest_path,
+    repository_manifest_path,
+    validate_repository,
+)
 from esc_exec.measurement import process_metrics
 from esc_exec.model import ValidationResult
 from esc_exec.onboarding import analyze_repository, apply_onboarding_answers
 from esc_exec.registry import add_route, read_registry, resolve_route
+from esc_exec.yaml_io import load_yaml
 from esc_orchestrator.application.ports import StateStore
 
 # ---------------------------------------------------------------------------
@@ -133,3 +139,44 @@ def validate_system(registry: Path) -> dict[str, list[ValidationResult] | str]:
         results[repository_id] = validate_all(repository_path, registry)
     return results
 
+
+
+@dataclass(frozen=True)
+class RepositoryLocation:
+    """Where a registered repository resolves to, or why it does not (input to the pure
+    `render_repository_list`)."""
+    id: str
+    path: Path | None
+    error: str | None
+
+
+def repository_locations(repository_ids: list[str], registry: Path) -> list[RepositoryLocation]:
+    locations = []
+    for repository_id in repository_ids:
+        try:
+            locations.append(RepositoryLocation(repository_id, resolve_route(registry, "repositories", repository_id), None))
+        except (KeyError, FileNotFoundError) as exc:
+            locations.append(RepositoryLocation(repository_id, None, str(exc)))
+    return locations
+
+
+def repository_map(repository_path: Path) -> dict[str, Any]:
+    """Read what onboarding produced from the generated manifests on disk (input to the pure
+    `render_onboarding_map`)."""
+    repository = load_yaml(repository_manifest_path(repository_path))
+    components = []
+    for entry in repository.get("components", []):
+        manifest = load_yaml(component_manifest_path(repository_path, entry["id"]))
+        component = manifest.get("component", {})
+        components.append({
+            "id": entry["id"],
+            "path": component.get("path"),
+            "build_system": manifest.get("build", {}).get("system"),
+            "purpose": component.get("purpose") or "(no purpose recorded)",
+            "profile_ids": manifest.get("architecture", {}).get("profile_ids") or [],
+            "has_verification": bool(manifest.get("paths", {}).get("verification_profile")),
+        })
+    return {
+        "id": repository["repository"]["id"], "type": repository["repository"]["type"],
+        "components": components, "excluded": repository.get("excluded_components") or [],
+    }

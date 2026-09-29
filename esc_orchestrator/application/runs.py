@@ -5,7 +5,7 @@ from typing import Any
 
 from esc_exec.checkpoints import checkpoint_path, create_checkpoint, update_checkpoint
 from esc_exec.registry import read_registry
-from esc_exec.worktree import merge_worktree
+from esc_exec.worktree import diff_summary, merge_worktree
 from esc_exec.yaml_io import load_yaml
 from esc_orchestrator.application.ports import StateStore
 from esc_orchestrator.application.providers import (
@@ -259,3 +259,16 @@ def promote_checkpoint(repository_path: Path, task_id: str, candidate: dict[str,
         return update_checkpoint(repository_path, task_id, **kwargs)
     return create_checkpoint(repository_path, task_path, **kwargs)
 
+
+
+def worktree_diff(repository_path: Path, task_id: str) -> str:
+    """`git diff --stat` of a task's worktree branch, or "" -- the effectful input to the pure
+    `render_checkpoint_candidate` / `render_run_detail`."""
+    return diff_summary(repository_path, task_id) or ""
+
+
+def run_worktree_diff(detail: dict[str, Any], repository_path: Path) -> str:
+    """The worktree diff for a run's checkpoint candidate, or "" when the run has none (no git
+    call is made then)."""
+    checkpoint = detail.get("checkpoint")
+    return worktree_diff(repository_path, checkpoint["task_id"]) if checkpoint is not None else ""
