@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from esc_exec.checkpoints import checkpoint_path, create_checkpoint, update_checkpoint
+from esc_exec.read_only import effective_policy, is_read_only
 from esc_exec.registry import active_provider, read_registry
 from esc_exec.worktree import diff_summary, merge_worktree
 from esc_exec.yaml_io import load_yaml
@@ -149,11 +150,14 @@ def execute_task(
     """
     task_path = locate_task(repository_path, repository_id, task_id)
     task_document = load_yaml(task_path)
+    work_type = task_document["task"].get("work_type")
     contracts = {
         "task": task_document,
         "workspace": default_workspace(repository_id),
         "adapter": default_adapter(provider),
-        "policy": resolve_default_policy(registry),
+        # For read-only work the configured policy is forced down here as well as in the runtime (the
+        # authoritative enforcement point), so what is recorded for the run is what it was actually granted.
+        "policy": effective_policy(resolve_default_policy(registry), work_type),
     }
     attempt = store.record_attempt(task_id)
     scheduler = scheduler_factory(store, runtime or runtime_factory(provider, registry, opencode_server), registry)
@@ -164,6 +168,7 @@ def execute_task(
         scheduler.close()
     run = store.get_run(run_id)
     summary = store.summary(run_id) or {}
+    read_only = is_read_only(work_type)
     return {
         "task_id": task_id, "run_id": run_id, "attempt": attempt,
         "status": run["status"], "error": run.get("error"), "output_path": run.get("output_path"),
@@ -173,6 +178,11 @@ def execute_task(
         "root_cause": task_document.get("root_cause"),
         "verification": {"status": summary.get("verification", {}).get("status"), "totals": summary.get("totals")}
         if summary else None,
+        # The product of read-only work (investigate's findings, plan's plan) is the agent's final message: it
+        # lives in the run record, because the repository must not change. Shown by the report.
+        "read_only": read_only,
+        "findings": (store.output_document(run_id, "summary.json") or {}).get("summary") if read_only else None,
+        "read_only_check": store.output_document(run_id, "read-only-check.json") if read_only else None,
     }
 
 
@@ -321,7 +331,8 @@ def prepare_task_run(store: StateStore, registry: Path, repository: str, task_id
     task_document = load_yaml(locate_task(repository_path, repository_id, task_id))
     return TaskRunPreview(
         repository_id, repository_path, task_document, active_provider(registry),
-        resolve_default_policy(registry), prior_consent(store, task_id),
+        effective_policy(resolve_default_policy(registry), task_document["task"].get("work_type")),
+        prior_consent(store, task_id),
     )
 
 

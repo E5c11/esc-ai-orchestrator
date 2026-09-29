@@ -10,14 +10,32 @@ from esc_exec.codex_adapter import CodexAdapter, CodexClient
 from esc_exec.environment import check_prerequisites
 from esc_exec.json_io import write_json
 from esc_exec.opencode_adapter import OpenCodeAdapter, OpenCodeClient
+from esc_exec.read_only import effective_policy, is_read_only, state_violations
 from esc_exec.registry import resolve_route
 from esc_exec.task_context import build_task_context, build_verification_plan
 from esc_exec.verification_execution import execute_verification_plan
+from esc_exec.worktree import repository_state
 from esc_exec.yaml_io import write_yaml
 from esc_orchestrator.application.doctor import architecture_coverage_blockers
 
 
-class PreDispatchBlockerError(Exception):
+class RunBlockedError(Exception):
+    """Common base for every reason `_AdapterRuntime.execute` stops a run and records blockers rather than a bare
+    error: the pre-dispatch gates below, and the post-run read-only check. Carries one blocker string per distinct
+    problem so `Scheduler._work` can name each one in the run's checkpoint. It checks
+    `isinstance(exc, RunBlockedError)` once instead of growing a per-subclass chain."""
+
+    def __init__(self, blockers: list[str]):
+        self.blockers = blockers
+        super().__init__("; ".join(blockers))
+
+
+class ReadOnlyViolationError(RunBlockedError):
+    """A `plan` or `investigation` run changed the repository. The run is failed and the files are named; nothing
+    is reverted automatically, because an automatic revert would itself be a destructive edit to the checkout."""
+
+
+class PreDispatchBlockerError(RunBlockedError):
     """
     Common base for every "don't even dispatch the agent" gate `_AdapterRuntime.execute`
     runs before `self.adapter.execute(...)` -- currently architecture-coverage gaps
@@ -29,9 +47,6 @@ class PreDispatchBlockerError(Exception):
     `isinstance(exc, PreDispatchBlockerError)` once, rather than growing a per-subclass
     isinstance chain every time a new pre-dispatch gate is added.
     """
-    def __init__(self, blockers: list[str]):
-        self.blockers = blockers
-        super().__init__("; ".join(blockers))
 
 
 class ArchitectureCoverageError(PreDispatchBlockerError):
@@ -71,6 +86,12 @@ class _AdapterRuntime:
     registry: Path
 
     def execute(self, contracts: dict[str, Any]) -> Path:
+        work_type = contracts["task"]["task"].get("work_type")
+        read_only = is_read_only(work_type)
+        # The authoritative place the policy is decided: every submitted task (the CLI, `api.py`'s POST /tasks,
+        # automatic advancement) passes through here, so a read-only work type cannot be run with edit rights by
+        # supplying a permissive policy from somewhere else.
+        contracts = {**contracts, "policy": effective_policy(contracts["policy"], work_type)}
         with TemporaryDirectory() as temp:
             root = Path(temp)
             paths = {}
@@ -92,19 +113,35 @@ class _AdapterRuntime:
             blockers = architecture_coverage_blockers(context)
             if blockers:
                 raise ArchitectureCoverageError(blockers)
-            plan = build_verification_plan(repository, paths["task"], root / "verification-plan.json")
-            # Pre-flight environment check -- see
-            # plan/active/pre-flight-doctor-and-gate-prerequisites.md. Resolves the
-            # plan's declared gate prerequisites (env vars, TCP services, credential
-            # files) against the real local environment before spending a real,
-            # subscription-metered agent dispatch on a task whose build can't even
-            # resolve its dependencies or reach the services it needs.
-            prerequisite_blockers = check_prerequisites(plan, repository)
-            if prerequisite_blockers:
-                raise EnvironmentPrerequisiteError(prerequisite_blockers)
+            plan = None
+            if not read_only:
+                plan = build_verification_plan(repository, paths["task"], root / "verification-plan.json")
+                # Pre-flight environment check -- see
+                # plan/active/pre-flight-doctor-and-gate-prerequisites.md. Resolves the
+                # plan's declared gate prerequisites (env vars, TCP services, credential
+                # files) against the real local environment before spending a real,
+                # subscription-metered agent dispatch on a task whose build can't even
+                # resolve its dependencies or reach the services it needs.
+                prerequisite_blockers = check_prerequisites(plan, repository)
+                if prerequisite_blockers:
+                    raise EnvironmentPrerequisiteError(prerequisite_blockers)
+            before = repository_state(repository) if read_only else None
             run_dir = self.adapter.execute(
                 paths["task"], paths["workspace"], paths["adapter"], paths["policy"]
             )
+            if read_only:
+                # No verification gates for read-only work (its procedure has no `verify` stage: nothing was
+                # supposed to change, and a test run can itself write build output that would read as a violation).
+                # Instead the backstop: compare the repository before and after, whatever the adapter and policy.
+                after = repository_state(repository)
+                violations = state_violations(before, after)
+                check = {"checked": before is not None and after is not None, "violations": violations}
+                write_json(run_dir / "read-only-check.json", check)
+                if violations:
+                    raise ReadOnlyViolationError([
+                        f"a read-only {work_type} run changed the repository: {violation}" for violation in violations
+                    ])
+                return run_dir
             write_json(run_dir / "verification-plan.json", plan)
             execute_verification_plan(plan, repository, run_dir)
             return run_dir

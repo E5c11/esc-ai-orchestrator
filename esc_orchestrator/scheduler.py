@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from esc_exec.checkpoints import checkpoint_document
+from esc_exec.read_only import is_read_only
 from esc_exec.registry import resolve_route
 from esc_exec.yaml_io import load_yaml, write_yaml
 from esc_orchestrator.initiative import analyze_task_impact
-from esc_orchestrator.runtime import PreDispatchBlockerError
+from esc_orchestrator.runtime import RunBlockedError
 from esc_orchestrator.store import Store
 
 logger = logging.getLogger(__name__)
@@ -180,7 +181,9 @@ class Scheduler:
                     self.store.update_run(
                         run_id, "waiting-approval", str(output), _permission_denial_summary(blockers)
                     )
-                elif not _run_produced_changes(output):
+                elif not is_read_only(self._work_type(task_id)) and not _run_produced_changes(output):
+                    # (Read-only work is exempt: "nothing changed" is its expected outcome, and it would
+                    # otherwise be mislabelled and never advance its dependents.)
                     # A no-op "success" must never look like real completed work
                     # (see plan/done/run-outcome-surfacing.md finding #9) -- a
                     # distinct status, not a repurposed "succeeded", so every
@@ -204,7 +207,7 @@ class Scheduler:
                 # plan/active/pre-flight-doctor-and-gate-prerequisites.md) carries
                 # one blocker per distinct gap; every other exception still gets the
                 # single opaque message, exactly as before.
-                blockers = exc.blockers if isinstance(exc, PreDispatchBlockerError) else [error]
+                blockers = exc.blockers if isinstance(exc, RunBlockedError) else [error]
                 output_path = None
                 try:
                     task = self.store.contracts(task_id)["task"]
@@ -217,6 +220,9 @@ class Scheduler:
                 self.store.update_run(run_id, "failed", output_path=output_path, error=error)
             finally:
                 self.queue.task_done()
+
+    def _work_type(self, task_id: str) -> str | None:
+        return self.store.contracts(task_id)["task"]["task"].get("work_type")
 
     def _advance(self, completed_task_id: str) -> None:
         """

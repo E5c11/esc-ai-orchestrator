@@ -16,8 +16,8 @@ INTENT_WORK_TYPES: dict[str, str | None] = {
     "refactor": "refactor",
     "job": "maintenance",
     "investigate": "investigation",
-    "plan": None,
-    "document": None,
+    "plan": "plan",
+    "document": "document",
 }
 
 
@@ -30,9 +30,9 @@ INTENT_SUMMARIES: dict[str, str] = {
     "feature": "Add new behavior, gated on architecture coverage and verification.",
     "refactor": "Restructure without changing behavior; a baseline is captured to verify against.",
     "job": "Any other change (chores, upgrades); loosely stated objective, same gates as `feature`.",
-    "investigate": "Read-only: find out how something works or why it happens. Never edits.",
-    "plan": "Read-only: produce a plan document without changing code. (Not yet available -- BLA-44.)",
-    "document": "Write documentation grounded in the repository's own index. (Not yet available -- BLA-44.)",
+    "investigate": "Read-only: analyse how something works or why it happens and report findings. Never edits.",
+    "plan": "Read-only: investigate a requested change and produce an implementation plan. Never edits.",
+    "document": "Write or update documentation grounded in the code as it is. Changes documentation files only.",
 }
 
 

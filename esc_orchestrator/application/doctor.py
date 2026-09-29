@@ -6,7 +6,9 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from esc_exec.environment import check_prerequisites
+from esc_exec.read_only import is_read_only
 from esc_exec.task_context import build_task_context, build_verification_plan
+from esc_exec.yaml_io import load_yaml
 
 
 def architecture_coverage_blockers(context: dict[str, Any]) -> list[str]:
@@ -34,6 +36,8 @@ def doctor_check(repository: Path, task_path: Path, registry: Path) -> list[str]
         root = Path(temp)
         context = build_task_context(repository, task_path, root / "task-context.json", registry_path=registry)
         blockers = architecture_coverage_blockers(context)
+        if is_read_only(load_yaml(task_path)["task"].get("work_type")):
+            return blockers  # no verification gates run for read-only work, so no prerequisites to check
         plan = build_verification_plan(repository, task_path, root / "verification-plan.json")
         blockers += check_prerequisites(plan, repository)
         return blockers

@@ -12,6 +12,7 @@ from typing import Any
 from esc_exec.claude_policy import granted_categories
 from esc_exec.model import ManifestState, ValidationResult
 from esc_exec.procedures import PROCEDURES
+from esc_exec.read_only import is_read_only
 from esc_orchestrator.domain.intents import INTENT_SUMMARIES, INTENT_WORK_TYPES
 from esc_orchestrator.domain.policy_profiles import (
     DEFAULT_POLICY_PROFILE_ID,
@@ -246,7 +247,24 @@ def render_procedure(verb: str) -> str:
     return "\n".join(lines)
 
 
+_READ_ONLY_NOTE = (
+    "Read-only, enforced: the run is granted read access only -- edit, execute and network are denied whatever\n"
+    "your default policy says -- and, whichever agent runs it, the repository is compared before and after. If\n"
+    "anything changed the run FAILS and names the files (it is never reverted for you). There is no verify\n"
+    "stage: nothing was meant to change. A run that changes nothing is a success, not `succeeded-no-changes`.\n"
+    "\n"
+    "Input:  the question or change, in a sentence, and the repository (-r).\n"
+    "Output: {output}\n"
+    "        printed by `escape-ai task run <repository> <task-id> --yes` and kept in the run record (the\n"
+    "        repository itself must not change, so nothing is written into it).\n"
+    "Limits: the agent cannot run commands (a shell can write), so it reasons from the code; reproducing a\n"
+    "        failure by running tests belongs to `fix`. Needs a git repository for the before/after check;\n"
+    "        without one that check is skipped and the report says so."
+)
+
 INTENT_NOTES: dict[str, str] = {
+    "investigate": _READ_ONLY_NOTE.format(output="Findings -- what the agent established, with evidence (paths, line numbers), and what it could not determine."),
+    "plan": _READ_ONLY_NOTE.format(output="a Plan -- ordered steps, the files/components each touches, risks, and how each step would be verified."),
     "fix": (
         "The root_cause gate: a fix cannot be planned until you have recorded what is actually wrong. Put this\n"
         "in your answers file (or answer the prompts interactively):\n"
@@ -356,6 +374,11 @@ def render_execution_preview(
     ]
     if task_document.get("root_cause"):
         lines += render_root_cause(task_document["root_cause"])
+    if is_read_only(task.get("work_type")):
+        lines.append(
+            f"Read-only: this {task['work_type']} run may not change the repository -- edit, execute and network "
+            "are denied, and the repository is compared before and after the run."
+        )
     if policy_document is not None:
         categories = granted_categories(policy_document)
         scope_text = ", ".join(categories) if categories else "read-only"
@@ -398,6 +421,24 @@ def render_verification(verification: dict[str, Any] | None) -> str | None:
     return f"Validation: {verification['status']}{detail}"
 
 
+_READ_ONLY_HEADINGS = {"plan": "Plan", "investigation": "Findings"}
+
+
+def render_read_only_result(result: dict[str, Any]) -> list[str]:
+    """What a plan/investigate run produced: the agent's own final message, under a heading that says what it is,
+    and what the repository check found. Nothing here is inferred -- both come from the run's record."""
+    heading = _READ_ONLY_HEADINGS.get(result.get("work_type") or "", "Findings")
+    lines = [f"{heading}:", *(f"  {line}" for line in (result.get("findings") or "(the agent returned no summary)").splitlines())]
+    check = result.get("read_only_check")
+    if check is None:
+        lines.append("Read-only check: no record was written for this run")
+    elif not check.get("checked"):
+        lines.append("Read-only check: skipped -- not a git repository, so the repository could not be compared (edit tools were still denied)")
+    else:
+        lines.append("Read-only check: repository unchanged")
+    return lines
+
+
 def render_execution_result(result: dict[str, Any], worktree_diff: str = "") -> str:
     """The run's final report. For a task that recorded a root cause it reads as what was wrong (the root
     cause), what changed (the worktree diff) and how it was validated (the verification result) -- all values
@@ -407,6 +448,8 @@ def render_execution_result(result: dict[str, Any], worktree_diff: str = "") -> 
     ]
     if result.get("root_cause"):
         lines += render_root_cause(result["root_cause"])
+    if result.get("read_only"):
+        lines += render_read_only_result(result)
     validation = render_verification(result.get("verification"))
     if validation:
         lines.append(validation)

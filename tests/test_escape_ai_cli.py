@@ -621,13 +621,14 @@ class IntentVerbTests(unittest.TestCase):
             self.assertEqual(1, code)
             self.assertIn("already exists", out)
 
-    def test_plan_and_document_verbs_are_explicitly_unavailable(self):
-        with TemporaryDirectory() as temp:
-            run, _ = self._setup(Path(temp))
-            for verb in ("plan", "document"):
-                code, out = run([verb, "Something.", "-r", "repo"])
-                self.assertEqual(2, code)
-                self.assertIn("BLA-44", out)
+    def test_every_verb_now_drafts_as_its_own_work_type(self):
+        expected = {"plan": "plan", "document": "document", "investigate": "investigation", "job": "maintenance"}
+        for verb, work_type in expected.items():
+            with self.subTest(verb=verb), TemporaryDirectory() as temp:
+                run, _ = self._setup(Path(temp))
+                code, out = run([verb, "Something to do.", "-r", "repo", "--json"])
+                self.assertEqual(0, code, out)
+                self.assertEqual(work_type, json.loads(out)["work_type"])
 
     def test_legacy_plan_subcommands_still_work_as_a_deprecated_alias(self):
         self.assertEqual(
