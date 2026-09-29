@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +17,7 @@ from esc_exec.onboarding import analyze_repository, apply_onboarding_answers
 from esc_exec.registry import add_route, read_registry, resolve_route
 from esc_exec.yaml_io import load_yaml
 from esc_orchestrator.application.ports import StateStore
+from esc_orchestrator.domain.repositories import RepositoryLocation
 
 # ---------------------------------------------------------------------------
 # Operations -- delegate to esc_exec/Store only, no prompts/printing. These are
@@ -139,15 +139,6 @@ def validate_system(registry: Path) -> dict[str, list[ValidationResult] | str]:
         results[repository_id] = validate_all(repository_path, registry)
     return results
 
-
-
-@dataclass(frozen=True)
-class RepositoryLocation:
-    """Where a registered repository resolves to, or why it does not (input to the pure
-    `render_repository_list`)."""
-    id: str
-    path: Path | None
-    error: str | None
 
 
 def repository_locations(repository_ids: list[str], registry: Path) -> list[RepositoryLocation]:

@@ -4,11 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from esc_exec.adapters import detect_build_system
-from esc_exec.claude_code_adapter import (
-    ClaudeCodeClient,
-    ClaudeCodeError,
-    suggest_onboarding_answers,
-)
+from esc_exec.claude_client import ClaudeCodeClient, ClaudeCodeError
+from esc_exec.ai_suggestions import suggest_onboarding_answers
 from esc_exec.conversation import (
     suggest_groundable_answers_turn,
     suggest_unresolved_components,

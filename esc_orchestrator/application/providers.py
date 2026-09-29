@@ -4,7 +4,7 @@ import copy
 from pathlib import Path
 from typing import Any
 
-from esc_exec.claude_code_adapter import claude_auth_status, claude_cli_available
+from esc_exec.claude_client import claude_auth_status, claude_cli_available
 from esc_exec.codex_adapter import codex_auth_status, codex_cli_available
 from esc_exec.registry import default_policy_id, set_provider
 from esc_orchestrator.domain.policy_profiles import (

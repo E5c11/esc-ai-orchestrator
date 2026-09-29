@@ -58,10 +58,8 @@ forbidden_modules =
     esc_exec.registry
     esc_exec.manifests
     esc_exec.checkpoints
+    esc_exec.claude_client
+    esc_exec.claude_code_adapter
     subprocess
     sqlite3
     shutil
-# Direct imports only: render imports the pure `granted_categories` from esc_exec.claude_code_adapter,
-# a module that also spawns processes -- a pure helper living in a gateway module (an engine-side
-# finding; the fix is to move it), so transitive imports are not checked here.
-allow_indirect_imports = True

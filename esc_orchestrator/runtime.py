@@ -4,7 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from esc_exec.claude_code_adapter import ClaudeCodeAdapter, ClaudeCodeClient
+from esc_exec.claude_client import ClaudeCodeClient
+from esc_exec.claude_code_adapter import ClaudeCodeAdapter
 from esc_exec.codex_adapter import CodexAdapter, CodexClient
 from esc_exec.environment import check_prerequisites
 from esc_exec.opencode_adapter import OpenCodeAdapter, OpenCodeClient

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from esc_exec.claude_code_adapter import ClaudeCodeClient
+from esc_exec.claude_client import ClaudeCodeClient
 from esc_exec.conversation import compact_conversation, run_turn, suggest_form_turn
 from esc_exec.planning import route_objective
 from esc_exec.registry import active_provider

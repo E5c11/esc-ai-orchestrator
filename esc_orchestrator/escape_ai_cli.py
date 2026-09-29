@@ -7,10 +7,8 @@ and tests reach for -- without holding any logic of its own.
 """
 from __future__ import annotations
 
-from esc_exec.claude_code_adapter import (  # noqa: F401
-    ClaudeCodeError,
-    granted_categories,
-)
+from esc_exec.claude_client import ClaudeCodeError  # noqa: F401
+from esc_exec.claude_policy import granted_categories  # noqa: F401
 from esc_exec.planning import WORK_TYPES  # noqa: F401
 from esc_exec.registry import (  # noqa: F401
     active_provider,
