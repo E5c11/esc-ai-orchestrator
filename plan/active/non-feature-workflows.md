@@ -1,6 +1,6 @@
 # Plan / Investigate / Refactor / Document workflows (BLA-44) — Plan
 
-**Status:** In progress
+**Status:** Implemented (2026-09-29); not yet merged
 **Date:** 2026-09-29
 **Objective:** Give `plan`, `investigate`, `refactor` and `document` real gates behind their verbs, so each
 procedure in BLA-48's contract is enforced rather than merely listed. After BLA-42/43 these are the remaining
@@ -65,3 +65,48 @@ procedure with no real gates behind it is cosmetic".
 
 - Each of the four is available through the CLI. Read-only workflows cannot modify the repository: forced policy
   plus a post-run check that fails the run. Each has documented inputs, behaviour and outputs (`--help`, docs).
+
+## Outcome
+
+Engine (branch `feat/bla-44-workflows`): `7a24cd6` work types + read-only primitives, `9db398b`-era fix aside,
+the verification-tree fix, `baseline_capture`, `grounding_check`. Orchestrator (same branch name): runtime
+enforcement, verification-tree fix, refactor, document. 641 engine tests, 330 orchestrator tests; 3 + 4 import
+contracts kept. **No stage of any procedure is "(not yet enforced)" any more** (a test asserts it; the marker
+mechanism is kept and tested with a synthetic stage).
+
+| Verb | What is now enforced |
+|---|---|
+| `plan`, `investigate` | policy forced to read-only at the runtime; before/after repository comparison (content-hashed, HEAD included) fails the run and names files, never reverts; success is `succeeded`; the agent's findings/plan are printed |
+| `refactor` | before dispatch: a runnable check must exist and pass, none may already fail, checkout must be clean; after: verify runs the same checks in the changed tree |
+| `document` | only documentation may change; every file/dir the changed docs point at must exist (link targets and unmistakable inline-code paths; fences, URLs, hostnames, prose like `read/write` skipped) |
+
+### A defect found on the way, fixed separately (`fix(verification)`)
+
+Verification ran in the **live checkout** while Claude Code edited a **worktree**, so the gates tested code the agent
+never touched. Reproduced with a real worktree and real checks: an agent that broke the check was reported
+`succeeded`; one that fixed it, `failed`. Fixed by verifying the tree the run's own `run.json` says it edited (plan
+still built from the live checkout so an agent cannot rewrite its gates). **This changes behaviour for every work type:
+runs that "passed" before because the changes were never tested may now fail, correctly.** Regression tests fail with
+the fix reverted.
+
+### Also found
+
+- `execute_verification_plan` reports `passed` when nothing ran. `refactor` now fails closed on that; **`fix`,
+  `feature` and `job` still do not** (a plan with no runnable check "verifies"). Follow-up ticket recommended.
+- The adapters' `ask` permission is treated as deny, so read-only denies `execute` outright (a shell can write).
+
+### Not done / not verified
+
+- **Nothing here was run against a real provider.** Every test uses a fake adapter against a real git repository and the
+  real runtime/scheduler. Whether Claude/Codex/OpenCode honour the reduced policy is exactly what the before/after
+  backstop is for, but it has not been observed live.
+- `plan` output is only shown when the task is run (`task run`), not in `observe a run` (`run_detail` does not surface
+  `summary.json`).
+- An `investigate` that needs to *run* something (reproduce a failure) cannot; `fix` owns reproduction. An opt-in
+  read-only-commands mode is a possible follow-up.
+- The read-only backstop and the refactor clean-checkout guard need git; without it the read-only check is skipped and
+  the report says so.
+- `fix`'s root cause is still operator-supplied; feeding it from an `investigate` run is not wired.
+- Nothing checks that a `refactor` agent did not edit a test to make it pass (the prompt says not to; the help says
+  to review the diff).
+- Verifying inside a worktree assumes the project builds there (`worktree_inherit` exists for gitignored local files).
