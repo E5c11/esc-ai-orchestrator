@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 from pathlib import Path
-from esc_orchestrator.store import Store
-from esc_orchestrator.entrypoints.cli.render import MENU, render_menu, render_system_validation
-from esc_orchestrator.application.repositories import validate_system
-from esc_orchestrator.entrypoints.cli.render import MENU, render_menu, render_system_validation
 
 from esc_orchestrator.application.repositories import validate_system
-from esc_orchestrator.entrypoints.cli.interactive.configure import run_configure_interactive
-from esc_orchestrator.entrypoints.cli.interactive.onboarding import run_onboarding_interactive
-from esc_orchestrator.entrypoints.cli.interactive.planning import run_planning_interactive
+from esc_orchestrator.entrypoints.cli.interactive.configure import (
+    run_configure_interactive,
+)
+from esc_orchestrator.entrypoints.cli.interactive.onboarding import (
+    run_onboarding_interactive,
+)
+from esc_orchestrator.entrypoints.cli.interactive.planning import (
+    run_planning_interactive,
+)
 from esc_orchestrator.entrypoints.cli.interactive.resume import (
     run_observe_interactive,
     run_resume_interactive,
 )
-from esc_orchestrator.entrypoints.cli.render import MENU, render_menu, render_system_validation
+from esc_orchestrator.entrypoints.cli.render import (
+    MENU,
+    render_menu,
+    render_system_validation,
+)
 from esc_orchestrator.entrypoints.cli.terminal import select_menu
+from esc_orchestrator.store import Store
 
 
 def run_interactive(store: Store, registry: Path) -> int:

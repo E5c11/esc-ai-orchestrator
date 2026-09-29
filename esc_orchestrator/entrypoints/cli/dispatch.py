@@ -5,6 +5,7 @@ import json
 import re
 import sys
 from pathlib import Path
+
 from esc_exec.manifests import overall_exit_code
 from esc_exec.procedures import PROCEDURES
 from esc_exec.registry import (
@@ -16,129 +17,47 @@ from esc_exec.registry import (
 )
 from esc_exec.roadmap import load_project_roadmap, save_project_roadmap
 from esc_exec.yaml_io import load_yaml
+from esc_orchestrator.application.planning import apply_plan, draft_plan
+from esc_orchestrator.application.providers import (
+    connect_provider,
+    resolve_default_policy,
+)
+from esc_orchestrator.application.repositories import (
+    analyze,
+    apply_answers,
+    planning_process_metrics,
+    repository_status,
+    resolve_repository,
+    validate_all,
+)
+from esc_orchestrator.application.runs import (
+    _task_id_suggestions,
+    active_work,
+    checkpoint_candidate,
+    execute_task,
+    prior_consent,
+    promote_checkpoint,
+)
+from esc_orchestrator.domain.intents import INTENT_WORK_TYPES, LEGACY_PLAN_SUBCOMMANDS
+from esc_orchestrator.entrypoints.cli.render import (
+    render_active_work,
+    render_apply_result,
+    render_checkpoint_candidate,
+    render_execution_preview,
+    render_execution_result,
+    render_plan_draft,
+    render_plan_result,
+    render_policy_status,
+    render_procedure,
+    render_proposal,
+    render_roadmap,
+    render_status,
+    render_validation,
+)
 from esc_orchestrator.initiative import analyze_task_impact, find_ready_tasks
 from esc_orchestrator.runtime import doctor_check
 from esc_orchestrator.scaffold_wizards import render_wizard_suggestion
 from esc_orchestrator.store import Store
-from esc_orchestrator.domain.intents import INTENT_WORK_TYPES, LEGACY_PLAN_SUBCOMMANDS
-from esc_orchestrator.entrypoints.cli.render import (
-    render_active_work,
-    render_apply_result,
-    render_checkpoint_candidate,
-    render_execution_preview,
-    render_execution_result,
-    render_plan_draft,
-    render_plan_result,
-    render_policy_status,
-    render_procedure,
-    render_proposal,
-    render_roadmap,
-    render_status,
-    render_validation,
-)
-from esc_orchestrator.application.planning import apply_plan, draft_plan
-from esc_orchestrator.application.providers import connect_provider, resolve_default_policy
-from esc_orchestrator.application.repositories import (
-    analyze,
-    apply_answers,
-    planning_process_metrics,
-    repository_status,
-    resolve_repository,
-    validate_all,
-)
-from esc_orchestrator.application.runs import (
-    _task_id_suggestions,
-    active_work,
-    checkpoint_candidate,
-    execute_task,
-    prior_consent,
-    promote_checkpoint,
-)
-from esc_orchestrator.domain.intents import INTENT_WORK_TYPES, LEGACY_PLAN_SUBCOMMANDS
-from esc_orchestrator.entrypoints.cli.render import (
-    render_active_work,
-    render_apply_result,
-    render_checkpoint_candidate,
-    render_execution_preview,
-    render_execution_result,
-    render_plan_draft,
-    render_plan_result,
-    render_policy_status,
-    render_procedure,
-    render_proposal,
-    render_roadmap,
-    render_status,
-    render_validation,
-)
-from esc_orchestrator.application.planning import apply_plan, draft_plan
-from esc_orchestrator.application.providers import connect_provider, resolve_default_policy
-from esc_orchestrator.application.repositories import (
-    analyze,
-    apply_answers,
-    planning_process_metrics,
-    repository_status,
-    resolve_repository,
-    validate_all,
-)
-from esc_orchestrator.application.runs import (
-    _task_id_suggestions,
-    active_work,
-    checkpoint_candidate,
-    execute_task,
-    prior_consent,
-    promote_checkpoint,
-)
-from esc_orchestrator.domain.intents import INTENT_WORK_TYPES, LEGACY_PLAN_SUBCOMMANDS
-from esc_orchestrator.entrypoints.cli.render import (
-    render_active_work,
-    render_apply_result,
-    render_checkpoint_candidate,
-    render_execution_preview,
-    render_execution_result,
-    render_plan_draft,
-    render_plan_result,
-    render_policy_status,
-    render_procedure,
-    render_proposal,
-    render_roadmap,
-    render_status,
-    render_validation,
-)
-
-from esc_orchestrator.application.planning import apply_plan, draft_plan
-from esc_orchestrator.application.providers import connect_provider, resolve_default_policy
-from esc_orchestrator.application.repositories import (
-    analyze,
-    apply_answers,
-    planning_process_metrics,
-    repository_status,
-    resolve_repository,
-    validate_all,
-)
-from esc_orchestrator.application.runs import (
-    _task_id_suggestions,
-    active_work,
-    checkpoint_candidate,
-    execute_task,
-    prior_consent,
-    promote_checkpoint,
-)
-from esc_orchestrator.domain.intents import INTENT_WORK_TYPES, LEGACY_PLAN_SUBCOMMANDS
-from esc_orchestrator.entrypoints.cli.render import (
-    render_active_work,
-    render_apply_result,
-    render_checkpoint_candidate,
-    render_execution_preview,
-    render_execution_result,
-    render_plan_draft,
-    render_plan_result,
-    render_policy_status,
-    render_procedure,
-    render_proposal,
-    render_roadmap,
-    render_status,
-    render_validation,
-)
 
 
 def _dispatch_repository(args: argparse.Namespace, store: Store, registry: Path) -> int:

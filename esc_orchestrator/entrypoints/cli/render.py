@@ -3,17 +3,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from esc_exec.worktree import diff_summary
+
 from esc_exec.claude_code_adapter import granted_categories
 from esc_exec.manifests import component_manifest_path, repository_manifest_path
 from esc_exec.model import ManifestState, ValidationResult
 from esc_exec.procedures import PROCEDURES
 from esc_exec.registry import resolve_route
+from esc_exec.worktree import diff_summary
 from esc_exec.yaml_io import load_yaml
-
 from esc_orchestrator.domain.intents import INTENT_SUMMARIES, INTENT_WORK_TYPES
-from esc_orchestrator.domain.policy_profiles import DEFAULT_POLICY_PROFILE_ID, POLICY_PROFILES
-
+from esc_orchestrator.domain.policy_profiles import (
+    DEFAULT_POLICY_PROFILE_ID,
+    POLICY_PROFILES,
+)
 
 MENU = [
     "Onboard a repository",

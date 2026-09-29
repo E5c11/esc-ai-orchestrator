@@ -2,24 +2,15 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+
 from esc_exec.registry import KNOWN_PROVIDERS
-from esc_orchestrator.domain.intents import INTENT_SUMMARIES
-from esc_orchestrator.domain.policy_profiles import POLICY_PROFILES
-from esc_orchestrator.entrypoints.cli.render import render_intent_overview, render_procedure
 from esc_orchestrator.application.providers import DEFAULT_OPENCODE_SERVER
 from esc_orchestrator.domain.intents import INTENT_SUMMARIES
 from esc_orchestrator.domain.policy_profiles import POLICY_PROFILES
-from esc_orchestrator.entrypoints.cli.render import render_intent_overview, render_procedure
-from esc_orchestrator.application.providers import DEFAULT_OPENCODE_SERVER
-from esc_orchestrator.domain.intents import INTENT_SUMMARIES
-from esc_orchestrator.domain.policy_profiles import POLICY_PROFILES
-from esc_orchestrator.entrypoints.cli.render import render_intent_overview, render_procedure
-
-from esc_orchestrator.application.providers import DEFAULT_OPENCODE_SERVER
-from esc_orchestrator.domain.intents import INTENT_SUMMARIES
-from esc_orchestrator.domain.policy_profiles import POLICY_PROFILES
-from esc_orchestrator.entrypoints.cli.render import render_intent_overview, render_procedure
-
+from esc_orchestrator.entrypoints.cli.render import (
+    render_intent_overview,
+    render_procedure,
+)
 
 # ---------------------------------------------------------------------------
 # Non-interactive subcommands.

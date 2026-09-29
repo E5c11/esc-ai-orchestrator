@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import shutil
 import sys
-from esc_orchestrator.entrypoints.cli.render import render_menu_options
-from esc_orchestrator.entrypoints.cli.render import render_menu_options
 
 from esc_orchestrator.entrypoints.cli.render import render_menu_options
-
 
 # ---------------------------------------------------------------------------
 # Interactive wizard -- thin glue between prompts and the operations above.

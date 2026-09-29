@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # Named, built-in policy profiles a task can start from by default (see
 # plan/done/configure-system-policy-profiles.md) -- a small, fixed, shipped set,
 # not free-form user-authored YAML (see that plan's Non-goals): the actual gap

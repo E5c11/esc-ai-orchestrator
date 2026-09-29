@@ -3,7 +3,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
-from esc_exec.architecture_lookup import load_architecture_index, resolve_architecture_docs
+
+from esc_exec.architecture_lookup import (
+    load_architecture_index,
+    resolve_architecture_docs,
+)
 from esc_exec.claude_code_adapter import (
     ClaudeCodeClient,
     suggest_architecture_coverage_gap,
@@ -11,28 +15,12 @@ from esc_exec.claude_code_adapter import (
 )
 from esc_exec.local_architecture import write_local_architecture_note
 from esc_exec.onboarding import ARCHITECTURE_FRAMEWORK_ID
-from esc_exec.planning import WORK_TYPES, architecture_doc_ids_for_components, load_repository_index
+from esc_exec.planning import (
+    WORK_TYPES,
+    architecture_doc_ids_for_components,
+    load_repository_index,
+)
 from esc_exec.registry import active_provider, resolve_route
-from esc_orchestrator.store import Store
-from esc_orchestrator.domain.intents import intent_for_work_type
-from esc_orchestrator.entrypoints.cli.render import (
-    CHAT_ABOUT_IT_OPTION,
-    render_plan_draft,
-    render_plan_result,
-    render_procedure,
-    render_work_types,
-)
-from esc_orchestrator.application.planning import apply_plan, draft_plan
-from esc_orchestrator.application.repositories import resolve_repository
-from esc_orchestrator.domain.intents import intent_for_work_type
-from esc_orchestrator.entrypoints.cli.render import (
-    CHAT_ABOUT_IT_OPTION,
-    render_plan_draft,
-    render_plan_result,
-    render_procedure,
-    render_work_types,
-)
-
 from esc_orchestrator.application.planning import apply_plan, draft_plan
 from esc_orchestrator.application.repositories import resolve_repository
 from esc_orchestrator.domain.intents import intent_for_work_type
@@ -48,6 +36,7 @@ from esc_orchestrator.entrypoints.cli.render import (
     render_work_types,
 )
 from esc_orchestrator.entrypoints.cli.terminal import ask, confirm, select_menu
+from esc_orchestrator.store import Store
 
 
 def confirm_work_type_drift_interactive(

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from esc_exec.checkpoints import create_checkpoint, checkpoint_path, update_checkpoint
-from esc_exec.worktree import merge_worktree
-from esc_exec.registry import read_registry
-from esc_exec.yaml_io import load_yaml
-from esc_orchestrator.scheduler import Scheduler
-from esc_orchestrator.application.ports import StateStore
 
+from esc_exec.checkpoints import checkpoint_path, create_checkpoint, update_checkpoint
+from esc_exec.registry import read_registry
+from esc_exec.worktree import merge_worktree
+from esc_exec.yaml_io import load_yaml
+from esc_orchestrator.application.ports import StateStore
 from esc_orchestrator.application.providers import (
     DEFAULT_OPENCODE_SERVER,
     default_adapter,
@@ -16,6 +15,7 @@ from esc_orchestrator.application.providers import (
     resolve_default_policy,
     resolve_runtime,
 )
+from esc_orchestrator.scheduler import Scheduler
 
 
 def active_work(store: StateStore, registry: Path) -> list[dict[str, Any]]:

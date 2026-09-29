@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+
 from esc_exec.adapters import detect_build_system
 from esc_exec.dependencies import validate_dependency_graph
 from esc_exec.indexing import validate_indexes
@@ -11,7 +12,6 @@ from esc_exec.model import ValidationResult
 from esc_exec.onboarding import analyze_repository, apply_onboarding_answers
 from esc_exec.registry import add_route, read_registry, resolve_route
 from esc_orchestrator.application.ports import StateStore
-
 
 # ---------------------------------------------------------------------------
 # Operations -- delegate to esc_exec/Store only, no prompts/printing. These are

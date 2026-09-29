@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+
 from esc_exec.planning import (
     WORK_TYPES,
     generate_multi_repository_workflow,
@@ -10,7 +11,6 @@ from esc_exec.planning import (
     route_objective,
 )
 from esc_orchestrator.application.ports import StateStore
-
 from esc_orchestrator.application.repositories import resolve_repository
 
 

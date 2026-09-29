@@ -2,33 +2,42 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+
 from esc_exec.adapters import detect_build_system
-from esc_exec.claude_code_adapter import ClaudeCodeClient, ClaudeCodeError, suggest_onboarding_answers
-from esc_exec.conversation import suggest_groundable_answers_turn, suggest_unresolved_components
+from esc_exec.claude_code_adapter import (
+    ClaudeCodeClient,
+    ClaudeCodeError,
+    suggest_onboarding_answers,
+)
+from esc_exec.conversation import (
+    suggest_groundable_answers_turn,
+    suggest_unresolved_components,
+)
 from esc_exec.registry import active_provider
+from esc_orchestrator.application.repositories import (
+    analyze,
+    apply_answers,
+    resolve_repository,
+)
+from esc_orchestrator.entrypoints.cli.interactive.configure import (
+    prompt_provider_setup_interactive,
+)
+from esc_orchestrator.entrypoints.cli.interactive.planning import (
+    run_planning_interactive,
+)
+from esc_orchestrator.entrypoints.cli.render import (
+    render_apply_result,
+    render_onboarding_map,
+    render_proposal,
+)
+from esc_orchestrator.entrypoints.cli.terminal import (
+    ask,
+    confirm,
+    print_question,
+    select_menu,
+)
 from esc_orchestrator.scaffold_wizards import render_wizard_suggestion
 from esc_orchestrator.store import Store
-from esc_orchestrator.entrypoints.cli.render import (
-    render_apply_result,
-    render_onboarding_map,
-    render_proposal,
-)
-from esc_orchestrator.application.repositories import analyze, apply_answers, resolve_repository
-from esc_orchestrator.entrypoints.cli.render import (
-    render_apply_result,
-    render_onboarding_map,
-    render_proposal,
-)
-
-from esc_orchestrator.application.repositories import analyze, apply_answers, resolve_repository
-from esc_orchestrator.entrypoints.cli.interactive.configure import prompt_provider_setup_interactive
-from esc_orchestrator.entrypoints.cli.interactive.planning import run_planning_interactive
-from esc_orchestrator.entrypoints.cli.render import (
-    render_apply_result,
-    render_onboarding_map,
-    render_proposal,
-)
-from esc_orchestrator.entrypoints.cli.terminal import ask, confirm, print_question, select_menu
 
 
 def suggest_answers_via_provider(

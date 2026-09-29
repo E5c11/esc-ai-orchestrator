@@ -2,17 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+
 from esc_exec.registry import active_provider
 from esc_exec.yaml_io import load_yaml
-from esc_orchestrator.runtime import doctor_check
-from esc_orchestrator.store import Store
-from esc_orchestrator.entrypoints.cli.render import (
-    render_active_work,
-    render_checkpoint_candidate,
-    render_execution_preview,
-    render_execution_result,
-    render_run_detail,
-)
 from esc_orchestrator.application.providers import resolve_default_policy
 from esc_orchestrator.application.repositories import resolve_repository
 from esc_orchestrator.application.runs import (
@@ -23,25 +15,9 @@ from esc_orchestrator.application.runs import (
     promote_checkpoint,
     run_detail,
 )
-from esc_orchestrator.entrypoints.cli.render import (
-    render_active_work,
-    render_checkpoint_candidate,
-    render_execution_preview,
-    render_execution_result,
-    render_run_detail,
+from esc_orchestrator.entrypoints.cli.interactive.configure import (
+    prompt_provider_setup_interactive,
 )
-
-from esc_orchestrator.application.providers import resolve_default_policy
-from esc_orchestrator.application.repositories import resolve_repository
-from esc_orchestrator.application.runs import (
-    active_work,
-    checkpoint_candidate,
-    execute_task,
-    prior_consent,
-    promote_checkpoint,
-    run_detail,
-)
-from esc_orchestrator.entrypoints.cli.interactive.configure import prompt_provider_setup_interactive
 from esc_orchestrator.entrypoints.cli.render import (
     render_active_work,
     render_checkpoint_candidate,
@@ -50,6 +26,8 @@ from esc_orchestrator.entrypoints.cli.render import (
     render_run_detail,
 )
 from esc_orchestrator.entrypoints.cli.terminal import confirm, select_menu
+from esc_orchestrator.runtime import doctor_check
+from esc_orchestrator.store import Store
 
 
 def _resume_item_label(item: dict[str, Any]) -> str:

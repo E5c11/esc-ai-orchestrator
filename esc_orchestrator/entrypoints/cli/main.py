@@ -1,13 +1,8 @@
 from __future__ import annotations
 
 import sys
-from esc_exec.registry import default_registry_path
-from esc_orchestrator.store import Store
-from esc_orchestrator.domain.intents import INTENT_WORK_TYPES
-from esc_orchestrator.domain.intents import INTENT_WORK_TYPES
-from esc_orchestrator.domain.intents import INTENT_WORK_TYPES
-from esc_orchestrator.entrypoints.cli.interactive.menu import run_interactive
 
+from esc_exec.registry import default_registry_path
 from esc_orchestrator.domain.intents import INTENT_WORK_TYPES
 from esc_orchestrator.entrypoints.cli.dispatch import (
     _dispatch_intent,
@@ -22,6 +17,21 @@ from esc_orchestrator.entrypoints.cli.dispatch import (
 )
 from esc_orchestrator.entrypoints.cli.interactive.menu import run_interactive
 from esc_orchestrator.entrypoints.cli.parser import build_parser
+from esc_orchestrator.store import Store
+
+
+# Command name -> handler. One entry per command (PYEP-DISPATCH-01): adding a command adds a row,
+# not another branch. Every intent verb shares one handler; the verb selects the procedure.
+_HANDLERS = {
+    "repository": _dispatch_repository,
+    "initiative": _dispatch_plan,
+    "task": _dispatch_task,
+    "resume": _dispatch_resume,
+    "provider": _dispatch_provider,
+    "policy": _dispatch_policy,
+    "roadmap": _dispatch_roadmap,
+    **dict.fromkeys(INTENT_WORK_TYPES, _dispatch_intent),
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,21 +40,5 @@ def main(argv: list[str] | None = None) -> int:
     store = Store(args.db)
     if args.command is None:
         return run_interactive(store, registry)
-    if args.command == "repository":
-        return _dispatch_repository(args, store, registry)
-    if args.command in INTENT_WORK_TYPES:
-        return _dispatch_intent(args, store, registry)
-    if args.command == "initiative":
-        return _dispatch_plan(args, store, registry)
-    if args.command == "task":
-        return _dispatch_task(args, store, registry)
-    if args.command == "resume":
-        return _dispatch_resume(args, store, registry)
-    if args.command == "provider":
-        return _dispatch_provider(args, store, registry)
-    if args.command == "policy":
-        return _dispatch_policy(args, store, registry)
-    if args.command == "roadmap":
-        return _dispatch_roadmap(args, store, registry)
-    return 1
-
+    handler = _HANDLERS.get(args.command)
+    return handler(args, store, registry) if handler else 1
