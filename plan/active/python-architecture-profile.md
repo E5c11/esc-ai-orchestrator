@@ -217,23 +217,26 @@ their signatures (`a9ed188`). Both are described in their commit messages.
 ### Still open (not done in this pass)
 
 Orchestrator:
-- **Two application -> infrastructure exceptions** (`.importlinter`): `execute_task` builds a
-  `Scheduler`; `resolve_runtime` builds provider runtimes. Fix = handlers receive an app/composition
-  object instead of `(store, registry)` (signature change across every `_dispatch_*` and flow).
+- ~~Two application -> infrastructure exceptions~~ and ~~no `AppError` hierarchy / exit-code table~~: closed in the
+  follow-up below.
 - No typed domain: values are `dict[str, Any]` throughout, and `POLICY_PROFILES` is a mutable dict
-  (`PYDOM-VALUE-01`). No `AppError` hierarchy (`ValueError` + message), no single exit-code table or
-  translation function (`PYERR-BASE-01`, `PYERR-TRANSLATE-01`, `PYERR-EXITCODE-01`).
+  (`PYDOM-VALUE-01`).
+- Error messages still name CLI commands ("run `escape-ai initiative answer` first"), so a second surface
+  (the MCP server, BLA-47) would show the wrong hint (`PYERR-SURFACE-01`, soft). Fix = carry the next step as
+  data on `AppError` and let each surface phrase it.
+- `entrypoints/cli/dispatch_system.py` still calls a few engine functions directly for trivial passthroughs
+  (`add_route`, `set_default_policy`, `default_policy_id`); harmless but not "one use case per handler".
 - Interactive flows contain logic and call the terminal directly; there is no `Prompter` port
   (`PYEP-INTERACT-01`). `terminal.py` is 34% covered and `resume.py` 67%.
 - 5 functions exceed complexity defaults (C901/PLR0912/PLR0915), so those rules are not enabled.
-- **Type checking was never run** (`PYTYPE-STRICT-01`): mypy/pyright strict is unverified on both repos,
-  and the docs' typing guidance is untested against real code.
+- **Type checking was never run** (`PYTYPE-STRICT-01`): mypy/pyright strict is unverified on both repos.
 
 Engine:
 - Modules over 400 lines with no justification or split: `contracts.py` 558, `manifests.py` 557,
   `onboarding.py` 548, `cli.py` 498, `conversation.py` 447, `ai_suggestions.py` 412.
 - Core modules read the clock (`reporting`, `roadmap`, `measurement`, `checkpoints`, `architecture`
-  call `datetime.now`) and `registry` reads `os.environ`: `PYDOM-CLOCK-01` / `PYCOMP-CONFIG-01`.
+  call `datetime.now`) and `registry.py` reads `os.environ` (`ESC_AI_REGISTRY`, `XDG_CONFIG_HOME`, `APPDATA`):
+  `PYDOM-CLOCK-01` / `PYCOMP-CONFIG-01`. The orchestrator now reads it only through `composition.build_app`.
 - 6/10/10 complexity offenders, and import order unsorted in ~26 files (not enabled in ruff).
 - An uncommitted change to `esc_exec/verification_execution.py` (a failure-classification regex fix)
   pre-dates this work and was deliberately left out of every commit.
@@ -250,3 +253,40 @@ Partly exercised: `ARCH-PY-USECASE` (ports, IO), `ARCH-PY-DOMAIN` (purity, clock
 `-CONCURRENCY`, `-COMPOSITION`, `-DATASOURCE`, and `PLAT-PY-CLI`, `-MCP`, `-HTTP`, `-PERSISTENCE`,
 `-SUBPROCESS`, `-TYPING`, `-PACKAGING`; and `ORCH-PY-USECASE`, `-ENTRYPOINT`, `-ADAPTER`.
 These have no evidence yet and should not be marked `active` on the strength of this pass.
+
+## Follow-up: composition object and AppError (2026-09-29)
+
+Done on `refactor/composition-and-app-error` (3 commits in the orchestrator, 260 -> 266 tests; docs commit in the
+framework), because BLA-43 (`fix` workflow) will add real failure cases and touch every handler.
+
+**Errors** (`ARCH-PY-ERROR`): `domain/errors.py` (`AppError` -> `NotFound` / `InvalidInput`
+(`UnsupportedRepository`) / `Conflict` / `Incomplete` / `Unavailable`, with an optional `hint` line);
+`application/errors.py::translates_engine_errors` converts the engine's `KeyError`/`FileNotFoundError`/
+`ValueError`/`OSError` at the application boundary; `entrypoints/cli/errors.py` is the single place errors become
+output and an exit status (0/1/2/70, documented once), with `@guarded` replacing ~20 per-handler `try/except`
+blocks and a top-level handler for bugs. Decision logic that lived in handlers (a missing-answers check that
+became "incomplete", the roadmap field merge, task lookup with "did you mean", the doctor call) moved into
+application operations; `doctor_check` moved out of `runtime.py` (infrastructure).
+
+**Composition** (`ARCH-PY-COMPOSITION`): `application/app.py::App` (store, registry, scheduler and runtime
+factories), `composition.py::build_app` (the only place that constructs the Store, Scheduler and runtimes),
+`execute_task` takes the factories instead of building a Scheduler, and `entrypoints/cli/main.py::run(argv,
+app_factory)` never imports infrastructure. Every handler and interactive flow takes an `App`.
+
+**Result:** both `.importlinter` exceptions are gone (import-linter reported "no matches" for them). One
+transitive contract now forbids domain, application and entrypoints from reaching store, runtime, scheduler or
+composition: 4 contracts kept, no ignores.
+
+**What the docs got wrong or missed** (fixed in the docs, `10f0d1a`): a CLI must parse `--db`/`--registry`
+before it can build the app, so the entrypoint takes an app *factory* rather than importing the composition
+root; operations needing fresh infrastructure per call need a factory on the App (`PYCOMP-FACTORY-01`);
+`PYCOMP-CHOICE-01` now allows a documented generic fallback (the OpenCode runtime is exactly that); the
+translate-a-library's-exceptions decorator pattern (`PYERR-LIBRARY-01`), including `str(KeyError)` returning its
+repr; interactive loops may catch `AppError`; messages that name one surface's command (`PYERR-SURFACE-01`).
+
+**Behavior changes (deliberate, in the commit messages):** an unexpected error now exits 70 with a short message
+and the traceback on stderr, instead of an uncaught traceback; a missing `task.yaml` puts "did you mean" on its
+own line everywhere; an unreadable answers file is reported before a bad repository id; a `KeyError`'s message
+is no longer shown wrapped in quotes. Status words and exit codes 0/1/2 are unchanged.
+
+`ARCH-PY-ERROR` and `ARCH-PY-COMPOSITION` are now `status: active` (9 of 27 Python docs).
