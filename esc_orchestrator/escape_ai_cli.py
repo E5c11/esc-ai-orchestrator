@@ -33,6 +33,7 @@ from esc_exec.planning import (
     WORK_TYPES, architecture_doc_ids_for_components, generate_multi_repository_workflow,
     generate_single_repository_workflow, load_repository_index, planning_questions, route_objective,
 )
+from esc_exec.procedures import PROCEDURES
 from esc_exec.registry import (
     KNOWN_PROVIDERS, SUBSCRIPTION_CAPABLE_PROVIDERS, active_provider, add_route,
     default_policy_id, default_registry_path, read_registry, resolve_route,
@@ -268,6 +269,67 @@ def render_repository_list(repository_ids: list[str], registry: Path) -> str:
 
 def render_work_types() -> str:
     return "Work type:"
+
+
+# BLA-42: the public intent verbs. Each is a front door onto
+# esc_exec.procedures.PROCEDURES[verb]; the value is the esc_exec.planning.WORK_TYPES
+# entry the existing draft_plan/apply_plan/execute_task machinery knows it by, or None
+# where no such work type exists yet (`plan`, `document` -- their pipelines land in
+# BLA-44). The verb never decides which stages run; PROCEDURES does.
+INTENT_WORK_TYPES: dict[str, str | None] = {
+    "fix": "fix",
+    "feature": "feature",
+    "refactor": "refactor",
+    "job": "maintenance",
+    "investigate": "investigation",
+    "plan": None,
+    "document": None,
+}
+assert set(INTENT_WORK_TYPES) == set(PROCEDURES), "INTENT_WORK_TYPES must cover exactly esc_exec.procedures.PROCEDURES"
+
+INTENT_SUMMARIES: dict[str, str] = {
+    "fix": "Fix a bug: capture the root cause first, then change and verify.",
+    "feature": "Add new behavior, gated on architecture coverage and verification.",
+    "refactor": "Restructure without changing behavior; a baseline is captured to verify against.",
+    "job": "Any other change (chores, upgrades); loosely stated objective, same gates as `feature`.",
+    "investigate": "Read-only: find out how something works or why it happens. Never edits.",
+    "plan": "Read-only: produce a plan document without changing code. (Not yet available -- BLA-44.)",
+    "document": "Write documentation grounded in the repository's own index. (Not yet available -- BLA-44.)",
+}
+
+# The legacy `plan draft|answer|apply|status|ready` group moved to `initiative` so
+# `plan` could become an intent verb; these first-arguments are still accepted under
+# `plan` as a deprecated alias (see _rewrite_legacy_plan_argv).
+LEGACY_PLAN_SUBCOMMANDS = ("draft", "answer", "apply", "status", "ready")
+
+_STAGE_KIND_LABELS = {"gate": "GATE", "question": "ask", "action": "run"}
+
+
+def intent_for_work_type(work_type: str) -> str | None:
+    """The intent verb whose draft_plan work type is `work_type`, if any."""
+    for verb, mapped in INTENT_WORK_TYPES.items():
+        if mapped == work_type:
+            return verb
+    return None
+
+
+def render_procedure(verb: str) -> str:
+    """The stages a verb enforces, in order -- what its help and drafts show so the
+    gates behind a friendly verb are never hidden (VISION.md, "what this is not")."""
+    lines = [f"Procedure for `{verb}` (fixed for everyone; never skipped):"]
+    for number, stage in enumerate(PROCEDURES[verb], 1):
+        interaction = "asks you unless your preferences auto-resolve it" if stage.interaction == "variable" else "always the same"
+        # A stage whose maps_to is "new" has no implementation behind it yet; say so
+        # rather than let help imply a gate that isn't running.
+        pending = "  (not yet enforced)" if stage.maps_to.startswith("new") else ""
+        lines.append(f"  {number}. {stage.name:<17} [{_STAGE_KIND_LABELS[stage.kind]}] {interaction}{pending}")
+    return "\n".join(lines)
+
+
+def render_intent_overview() -> str:
+    lines = ["Intent workflows (each runs a fixed procedure; see `escape-ai <verb> --help`):"]
+    lines += [f"  {verb:<12} {INTENT_SUMMARIES[verb]}" for verb in INTENT_WORK_TYPES]
+    return "\n".join(lines)
 
 
 def render_plan_draft(draft: dict[str, Any]) -> str:
@@ -1944,6 +2006,10 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
     else:
         work_type = work_type_options[choice]
 
+    verb = intent_for_work_type(work_type)
+    if verb is not None:
+        print(render_procedure(verb))
+
     try:
         draft = draft_plan(store, registry, initiative_id, work_type, objective, repository_values)
     except (OSError, ValueError, KeyError, FileNotFoundError) as exc:
@@ -2288,7 +2354,9 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
 # ---------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="escape-ai")
+    parser = argparse.ArgumentParser(
+        prog="escape-ai", epilog=render_intent_overview(), formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--registry", type=Path, default=None, help="Override the machine-local system catalog path")
     parser.add_argument("--db", type=Path, default=Path(".orchestrator/orchestrator.db"), help="Orchestrator state database path")
     subcommands = parser.add_subparsers(dest="command")
@@ -2312,7 +2380,22 @@ def build_parser() -> argparse.ArgumentParser:
     repository_commands.add_parser("validate").add_argument("repository")
     repository_commands.add_parser("status").add_argument("repository")
 
-    plan = subcommands.add_parser("plan", help="Plan a feature/fix and generate workflow files")
+    for verb, summary in INTENT_SUMMARIES.items():
+        intent = subcommands.add_parser(
+            verb, help=summary, description=summary,
+            epilog=render_procedure(verb), formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        intent.add_argument("objective", help="What you want done, in a sentence")
+        intent.add_argument(
+            "-r", "--repository", action="append", dest="repositories", metavar="REPOSITORY",
+            help="Repository ID or path; repeat for a multi-repository change (required)",
+        )
+        intent.add_argument("--initiative-id", help="Initiative slug (default: derived from the verb and objective)")
+        intent.add_argument("--json", action="store_true")
+
+    plan = subcommands.add_parser(
+        "initiative", help="Draft, answer and apply a plan step by step (what the intent verbs drive)",
+    )
     plan_commands = plan.add_subparsers(dest="plan_command", required=True)
 
     plan_draft = plan_commands.add_parser("draft")
@@ -2464,6 +2547,59 @@ def _dispatch_repository(args: argparse.Namespace, store: Store, registry: Path)
     return 1
 
 
+def _initiative_id_for(verb: str, objective: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", objective.lower()).strip("-")[:40].strip("-")
+    return f"{verb}-{slug}" if slug else verb
+
+
+def _dispatch_intent(args: argparse.Namespace, store: Store, registry: Path) -> int:
+    """BLA-42 front door: an intent verb drafts an initiative through the same
+    draft_plan the `initiative` group and the interactive menu use. It only selects
+    the procedure; every gate lives in PROCEDURES and the execution machinery."""
+    verb = args.command
+    work_type = INTENT_WORK_TYPES[verb]
+    if work_type is None:
+        print(f"UNAVAILABLE `{verb}` has no pipeline yet (planned in BLA-44). Its procedure will be:")
+        print(render_procedure(verb))
+        return 2
+    if not args.repositories:
+        print(f"INVALID    `{verb}` needs at least one repository: -r <repository-id-or-path>")
+        return 1
+    initiative_id = args.initiative_id or _initiative_id_for(verb, args.objective)
+    if store.get_plan_draft(initiative_id) is not None:
+        print(f"INVALID    initiative `{initiative_id}` already exists; pass --initiative-id to use another name.")
+        return 1
+    try:
+        draft = draft_plan(store, registry, initiative_id, work_type, args.objective, args.repositories)
+    except (OSError, ValueError, KeyError, FileNotFoundError) as exc:
+        print(f"INVALID    {exc}")
+        return 1
+    if args.json:
+        print(json.dumps({**draft, "intent": verb, "procedure": [stage.name for stage in PROCEDURES[verb]]}, indent=2))
+        return 0
+    print(render_plan_draft(draft))
+    print()
+    print(render_procedure(verb))
+    print()
+    print(f"Next: `escape-ai initiative answer {initiative_id} <answers.json>`, then `escape-ai initiative apply {initiative_id}`.")
+    return 0
+
+
+def _rewrite_legacy_plan_argv(argv: list[str]) -> list[str]:
+    """`plan draft|answer|apply|status|ready ...` -> `initiative ...`, with a notice,
+    so existing scripts survive `plan` becoming an intent verb."""
+    index = 0
+    while index < len(argv) and argv[index].startswith("-"):
+        index += 2 if argv[index] in ("--registry", "--db") else 1
+    if index + 1 < len(argv) and argv[index] == "plan" and argv[index + 1] in LEGACY_PLAN_SUBCOMMANDS:
+        print(
+            f"note: `escape-ai plan {argv[index + 1]}` is deprecated; use `escape-ai initiative {argv[index + 1]}`.",
+            file=sys.stderr,
+        )
+        return [*argv[:index], "initiative", *argv[index + 1:]]
+    return argv
+
+
 def _dispatch_plan(args: argparse.Namespace, store: Store, registry: Path) -> int:
     if args.plan_command == "draft":
         request = json.loads(args.request_file.read_text(encoding="utf-8"))
@@ -2481,13 +2617,13 @@ def _dispatch_plan(args: argparse.Namespace, store: Store, registry: Path) -> in
     if args.plan_command == "answer":
         answers = json.loads(args.answers_file.read_text(encoding="utf-8"))
         store.save_plan_pending_answers(args.initiative_id, answers)
-        print(f"STORED     answers for `{args.initiative_id}`; run `escape-ai plan apply {args.initiative_id}` to write them.")
+        print(f"STORED     answers for `{args.initiative_id}`; run `escape-ai initiative apply {args.initiative_id}` to write them.")
         return 0
 
     if args.plan_command == "apply":
         pending = store.get_plan_pending_answers(args.initiative_id)
         if pending is None:
-            print(f"INCOMPLETE no pending answers for `{args.initiative_id}`; run `escape-ai plan answer` first.")
+            print(f"INCOMPLETE no pending answers for `{args.initiative_id}`; run `escape-ai initiative answer` first.")
             return 2
         try:
             result, dependency_chain = apply_plan(store, registry, args.initiative_id, pending["answers"])
@@ -2663,14 +2799,16 @@ def _dispatch_roadmap(args: argparse.Namespace, store: Store, registry: Path) ->
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = build_parser().parse_args(_rewrite_legacy_plan_argv(list(sys.argv[1:] if argv is None else argv)))
     registry = args.registry or default_registry_path()
     store = Store(args.db)
     if args.command is None:
         return run_interactive(store, registry)
     if args.command == "repository":
         return _dispatch_repository(args, store, registry)
-    if args.command == "plan":
+    if args.command in INTENT_WORK_TYPES:
+        return _dispatch_intent(args, store, registry)
+    if args.command == "initiative":
         return _dispatch_plan(args, store, registry)
     if args.command == "task":
         return _dispatch_task(args, store, registry)

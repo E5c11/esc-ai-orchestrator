@@ -47,11 +47,16 @@ escape-ai repository apply <id-or-path>         # the explicit write step
 escape-ai repository validate <id-or-path>
 escape-ai repository status <id-or-path>
 
-escape-ai plan draft <initiative-id> <request.json>       # {work_type, objective, repositories}
-escape-ai plan answer <initiative-id> <answers.json>      # stage answers
-escape-ai plan apply <initiative-id>                      # the explicit write step
-escape-ai plan status <initiative-id>
-escape-ai plan ready <initiative-id>                      # tasks in this initiative that are
+escape-ai <verb> "<objective>" -r <repository> [-r ...]   # intent front door: fix | feature | refactor |
+                                # job | investigate (plan, document: not yet available, BLA-44).
+                                # Drafts an initiative and prints the fixed stage procedure it enforces;
+                                # `escape-ai <verb> --help` lists the stages. Continue with `initiative`.
+
+escape-ai initiative draft <initiative-id> <request.json>       # {work_type, objective, repositories}
+escape-ai initiative answer <initiative-id> <answers.json>      # stage answers
+escape-ai initiative apply <initiative-id>                      # the explicit write step
+escape-ai initiative status <initiative-id>
+escape-ai initiative ready <initiative-id>                      # tasks in this initiative that are
                                                            # unblocked and never submitted
 
 escape-ai provider auth <name> [--route subscription|api-key]   # connect an AI provider once;
@@ -87,7 +92,7 @@ escape-ai task impact <task-id>                           # show which other ini
                                                            # this completed task unblocks
 ```
 
-`analyze`/`answer`/`apply` (and `plan draft`/`answer`/`apply`) are deliberately
+`analyze`/`answer`/`apply` (and `initiative draft`/`answer`/`apply`) are deliberately
 separate steps: analysis/drafting never writes anything, staging an answer never
 writes anything, and `apply` is the one explicit approval boundary where files
 actually get written — manifests, indexes, verification/architecture profiles, and
@@ -111,7 +116,7 @@ A repository's `project_roadmap` (`.esc-ai/roadmap.yaml` — purpose, current st
 direction, durable decisions) is durable, human-editable context, not per-initiative
 state: set it directly (`roadmap show`/`roadmap set`, or "Configure system" → "Show /
 set project roadmap"), or let it evolve through the AI-mediated planning conversation
-offered during single-repository `plan draft` (which now shows current vs. proposed
+offered during single-repository `initiative draft` (which now shows current vs. proposed
 values before asking to save). Every adapter's real execution prompt includes it when
 present — this is a repository-level fact every task in that repository sees, not
 just the next planning conversation's seed.

@@ -531,6 +531,95 @@ class PlanningDispatchTests(unittest.TestCase):
             )
 
 
+class IntentVerbTests(unittest.TestCase):
+    """BLA-42: intent verbs are a front door onto esc_exec.procedures.PROCEDURES."""
+
+    _onboard = PlanningDispatchTests._onboard
+
+    def _setup(self, root: Path):
+        db = root / "db.sqlite"
+        registry = root / "registry.yaml"
+        repository_dir = root / "repo-checkout"
+        _make_gradle_repository(repository_dir)
+
+        def run(argv):
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                code = cli.main(["--db", str(db), "--registry", str(registry), *argv])
+            return code, buffer.getvalue()
+
+        self._onboard(run, "repo", repository_dir, "Owns content.")
+        return run, repository_dir
+
+    def test_every_procedure_has_an_intent_verb_and_help_lists_its_stages(self):
+        from esc_exec.procedures import PROCEDURES
+        self.assertEqual(set(PROCEDURES), set(cli.INTENT_WORK_TYPES))
+        parser = cli.build_parser()
+        for verb, stages in PROCEDURES.items():
+            with self.subTest(verb=verb):
+                help_text = next(
+                    action for action in parser._subparsers._group_actions
+                ).choices[verb].format_help()
+                for stage in stages:
+                    self.assertIn(stage.name, help_text)
+
+    def test_stages_without_an_implementation_are_marked_not_yet_enforced(self):
+        fix = cli.render_procedure("fix")
+        self.assertRegex(fix, r"root_cause.*\(not yet enforced\)")
+        self.assertNotRegex(fix, r"verify.*not yet enforced")
+
+    def test_intent_work_types_are_real_planning_work_types(self):
+        from esc_exec.planning import WORK_TYPES
+        for verb, work_type in cli.INTENT_WORK_TYPES.items():
+            self.assertTrue(work_type is None or work_type in WORK_TYPES, verb)
+        self.assertEqual("maintenance", cli.INTENT_WORK_TYPES["job"])
+
+    def test_fix_verb_drafts_an_initiative_and_shows_its_procedure(self):
+        with TemporaryDirectory() as temp:
+            run, _ = self._setup(Path(temp))
+            code, out = run(["fix", "Content export crashes.", "-r", "repo"])
+            self.assertEqual(0, code, out)
+            self.assertIn("fix-content-export-crashes", out)
+            self.assertIn("root_cause", out)
+            code, out = run(["initiative", "status", "fix-content-export-crashes"])
+            self.assertIn("has_draft: True", out)
+
+    def test_job_verb_drafts_as_maintenance(self):
+        with TemporaryDirectory() as temp:
+            run, _ = self._setup(Path(temp))
+            code, out = run(["job", "Bump dependencies.", "-r", "repo", "--json"])
+            self.assertEqual(0, code, out)
+            document = json.loads(out)
+            self.assertEqual("maintenance", document["work_type"])
+            self.assertEqual("job", document["intent"])
+
+    def test_verb_requires_a_repository_and_refuses_a_taken_initiative_id(self):
+        with TemporaryDirectory() as temp:
+            run, _ = self._setup(Path(temp))
+            code, out = run(["feature", "Add export."])
+            self.assertEqual(1, code)
+            self.assertIn("needs at least one repository", out)
+            self.assertEqual(0, run(["feature", "Add export.", "-r", "repo"])[0])
+            code, out = run(["feature", "Add export.", "-r", "repo"])
+            self.assertEqual(1, code)
+            self.assertIn("already exists", out)
+
+    def test_plan_and_document_verbs_are_explicitly_unavailable(self):
+        with TemporaryDirectory() as temp:
+            run, _ = self._setup(Path(temp))
+            for verb in ("plan", "document"):
+                code, out = run([verb, "Something.", "-r", "repo"])
+                self.assertEqual(2, code)
+                self.assertIn("BLA-44", out)
+
+    def test_legacy_plan_subcommands_still_work_as_a_deprecated_alias(self):
+        self.assertEqual(
+            ["--db", "x", "initiative", "status", "a"],
+            cli._rewrite_legacy_plan_argv(["--db", "x", "plan", "status", "a"]),
+        )
+        self.assertEqual(["plan", "Add export."], cli._rewrite_legacy_plan_argv(["plan", "Add export."]))
+
+
 class TopLevelMenuLoopTests(unittest.TestCase):
     """
     Regression: run_interactive used to run exactly one action and propagate its

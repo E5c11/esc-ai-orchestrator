@@ -95,7 +95,7 @@ request file:
 `work_type` is one of `feature`, `fix`, `refactor`, `maintenance`, `investigation`.
 
 ```
-escape-ai plan draft <initiative-id> <request.json>
+escape-ai initiative draft <initiative-id> <request.json>
 ```
 
 Write a plan-answers file — one entry needed regardless of how many repositories:
@@ -110,8 +110,8 @@ Write a plan-answers file — one entry needed regardless of how many repositori
 ```
 
 ```
-escape-ai plan answer <initiative-id> <plan-answers.json>
-escape-ai plan apply <initiative-id>
+escape-ai initiative answer <initiative-id> <plan-answers.json>
+escape-ai initiative apply <initiative-id>
 ```
 
 For a **single-repository** plan, `apply` writes one `task.yaml`, and its task ID is
@@ -145,7 +145,7 @@ Multi-repository plan — find every task that's unblocked *right now* and has n
 been submitted:
 
 ```
-escape-ai plan ready <initiative-id>
+escape-ai initiative ready <initiative-id>
 ```
 
 This prints a JSON list of `"repository/task-id"` entries — every task whose
@@ -259,10 +259,10 @@ is for people who aren't the maintainer.
 | Tier 1 detection | `escape-ai repository analyze <id> --json` |
 | Submit onboarding answers | `escape-ai repository answer <id> <file>` |
 | Apply onboarding | `escape-ai repository apply <id>` |
-| Draft a plan | `escape-ai plan draft <initiative-id> <request.json>` |
-| Submit plan answers | `escape-ai plan answer <initiative-id> <file>` |
-| Apply a plan | `escape-ai plan apply <initiative-id>` |
-| Find every currently-ready task | `escape-ai plan ready <initiative-id>` |
+| Draft a plan | `escape-ai initiative draft <initiative-id> <request.json>` |
+| Submit plan answers | `escape-ai initiative answer <initiative-id> <file>` |
+| Apply a plan | `escape-ai initiative apply <initiative-id>` |
+| Find every currently-ready task | `escape-ai initiative ready <initiative-id>` |
 | Connect a provider | `escape-ai provider auth <name>` |
 | Run a task | `escape-ai task run <repo-id> <task-id> --yes` |
 | See what's active/blocked | `escape-ai resume --json` |
