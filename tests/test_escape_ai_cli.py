@@ -576,9 +576,14 @@ class IntentVerbTests(unittest.TestCase):
                     self.assertIn(stage.name, help_text)
 
     def test_stages_without_an_implementation_are_marked_not_yet_enforced(self):
+        document = cli.render_procedure("document")
+        self.assertRegex(document, r"grounding_check.*\(not yet enforced\)")
+        self.assertNotRegex(document, r"verify.*not yet enforced")
+
+    def test_the_refactor_procedure_no_longer_claims_baseline_capture_is_unenforced(self):
         refactor = cli.render_procedure("refactor")
-        self.assertRegex(refactor, r"baseline_capture.*\(not yet enforced\)")
-        self.assertNotRegex(refactor, r"verify.*not yet enforced")
+        self.assertIn("baseline_capture", refactor)
+        self.assertNotIn("not yet enforced", refactor)
 
     def test_the_fix_procedure_no_longer_claims_root_cause_is_unenforced(self):
         fix = cli.render_procedure("fix")

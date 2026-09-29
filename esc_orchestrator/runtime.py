@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+from esc_exec.baseline import baseline_blockers, plan_blockers
 from esc_exec.claude_client import ClaudeCodeClient
 from esc_exec.claude_code_adapter import ClaudeCodeAdapter
 from esc_exec.codex_adapter import CodexAdapter, CodexClient
@@ -18,6 +20,9 @@ from esc_exec.worktree import repository_state, verification_root
 from esc_exec.yaml_io import write_yaml
 from esc_orchestrator.application.doctor import architecture_coverage_blockers
 
+# escape-ai's own files; changes there are the tool working, never the user's uncommitted work.
+_TOOL_OWNED = (".esc-ai/", ".orchestrator/")
+
 
 class RunBlockedError(Exception):
     """Common base for every reason `_AdapterRuntime.execute` stops a run and records blockers rather than a bare
@@ -28,6 +33,12 @@ class RunBlockedError(Exception):
     def __init__(self, blockers: list[str]):
         self.blockers = blockers
         super().__init__("; ".join(blockers))
+
+
+class BaselineError(RunBlockedError):
+    """A `refactor` cannot be judged: there is no runnable check, the checkout has uncommitted changes the agent's
+    worktree will not contain, or the untouched code already fails its own checks. Raised before the agent is
+    dispatched, so nothing is spent on a refactor that could not be shown to preserve behaviour."""
 
 
 class ReadOnlyViolationError(RunBlockedError):
@@ -125,6 +136,7 @@ class _AdapterRuntime:
                 prerequisite_blockers = check_prerequisites(plan, repository)
                 if prerequisite_blockers:
                     raise EnvironmentPrerequisiteError(prerequisite_blockers)
+            baseline = self._capture_baseline(repository, plan, contracts, root) if work_type == "refactor" else None
             before = repository_state(repository) if read_only else None
             run_dir = self.adapter.execute(
                 paths["task"], paths["workspace"], paths["adapter"], paths["policy"]
@@ -149,7 +161,33 @@ class _AdapterRuntime:
             # an agent cannot rewrite its own gates by editing the verification profile in its worktree.
             verify_root = verification_root(repository, contracts["task"]["task"]["id"], run_dir)
             execute_verification_plan(plan, verify_root, run_dir, relative_to=repository)
+            if baseline is not None:
+                # Kept with the run as the record of what "behaviour unchanged" meant for this refactor.
+                write_json(run_dir / "baseline-verification-result.json", baseline)
             return run_dir
+
+    @staticmethod
+    def _capture_baseline(repository: Path, plan: dict[str, Any], contracts: dict[str, Any], root: Path) -> dict[str, Any]:
+        """The `baseline_capture` stage: run the task's checks against the untouched code before dispatch and refuse
+        the refactor unless that baseline is meaningful (esc_exec.baseline). Raises BaselineError."""
+        blockers = plan_blockers(plan)
+        if blockers:
+            raise BaselineError(blockers)
+        state = repository_state(repository)
+        uncommitted = sorted(path for path in (state or {"files": {}})["files"] if not path.startswith(_TOOL_OWNED))
+        if uncommitted:
+            shown = ", ".join(uncommitted[:5]) + (f" and {len(uncommitted) - 5} more" if len(uncommitted) > 5 else "")
+            raise BaselineError([
+                f"the checkout has uncommitted changes ({shown}); the agent starts from the last commit, so the "
+                "baseline would not describe what it starts from -- commit or stash them first"
+            ])
+        baseline_dir = repository / ".esc-ai" / "runs" / f"baseline-{contracts['task']['task']['id']}-{uuid.uuid4().hex[:8]}"
+        baseline_dir.mkdir(parents=True)
+        baseline = execute_verification_plan(plan, repository, baseline_dir, relative_to=repository)
+        blockers = baseline_blockers(baseline)
+        if blockers:
+            raise BaselineError(blockers)
+        return baseline
 
 
 class OpenCodeRuntime(_AdapterRuntime):

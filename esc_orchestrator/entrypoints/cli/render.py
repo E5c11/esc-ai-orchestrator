@@ -264,6 +264,20 @@ _READ_ONLY_NOTE = (
 
 INTENT_NOTES: dict[str, str] = {
     "investigate": _READ_ONLY_NOTE.format(output="Findings -- what the agent established, with evidence (paths, line numbers), and what it could not determine."),
+    "refactor": (
+        "The baseline_capture gate: a refactor claims behaviour did not change, and the only evidence is your own\n"
+        "checks. So before the agent starts they are run against the untouched code, and the refactor is refused\n"
+        "(before any agent time is spent) unless that baseline is meaningful:\n"
+        "\n"
+        "  - at least one check must be runnable and actually pass -- verification alone reports `passed` when\n"
+        "    nothing ran, so a refactor with no tests would otherwise 'verify' having proved nothing;\n"
+        "  - no check may already fail (fix that first, e.g. with `escape-ai fix`);\n"
+        "  - the checkout must have no uncommitted changes, because the agent starts from the last commit.\n"
+        "\n"
+        "After the agent finishes, the ordinary verify gate runs the same checks in the tree it changed; they must\n"
+        "all pass again. The baseline result is kept with the run. Cost: your suite runs twice. The agent is told\n"
+        "not to edit a test to make it pass, but nothing checks that: review the diff for changed tests."
+    ),
     "plan": _READ_ONLY_NOTE.format(output="a Plan -- ordered steps, the files/components each touches, risks, and how each step would be verified."),
     "fix": (
         "The root_cause gate: a fix cannot be planned until you have recorded what is actually wrong. Put this\n"
@@ -450,6 +464,12 @@ def render_execution_result(result: dict[str, Any], worktree_diff: str = "") -> 
         lines += render_root_cause(result["root_cause"])
     if result.get("read_only"):
         lines += render_read_only_result(result)
+    baseline = result.get("baseline")
+    if baseline and result.get("status") == "succeeded":
+        lines.append(
+            f"Behaviour: {baseline['passed_checks']} check(s) passed on the untouched code and the same checks "
+            "passed after the change"
+        )
     validation = render_verification(result.get("verification"))
     if validation:
         lines.append(validation)

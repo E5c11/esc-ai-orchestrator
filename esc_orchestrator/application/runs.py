@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from esc_exec.baseline import passed_check_count
 from esc_exec.checkpoints import checkpoint_path, create_checkpoint, update_checkpoint
 from esc_exec.read_only import effective_policy, is_read_only
 from esc_exec.registry import active_provider, read_registry
@@ -183,6 +184,8 @@ def execute_task(
         "read_only": read_only,
         "findings": (store.output_document(run_id, "summary.json") or {}).get("summary") if read_only else None,
         "read_only_check": store.output_document(run_id, "read-only-check.json") if read_only else None,
+        # A refactor's baseline: how many checks were green before the change (see esc_exec.baseline).
+        "baseline": _baseline_for(store, run_id) if work_type == "refactor" else None,
     }
 
 
@@ -300,6 +303,11 @@ def run_worktree_diff(detail: dict[str, Any], repository_path: Path) -> str:
     call is made then)."""
     checkpoint = detail.get("checkpoint")
     return worktree_diff(repository_path, checkpoint["task_id"]) if checkpoint is not None else ""
+
+
+def _baseline_for(store: StateStore, run_id: str) -> dict[str, Any] | None:
+    document = store.output_document(run_id, "baseline-verification-result.json")
+    return {"passed_checks": passed_check_count(document)} if document else None
 
 
 def locate_task(repository_path: Path, repository_id: str, task_id: str) -> Path:
