@@ -85,657 +85,79 @@ from esc_orchestrator.entrypoints.cli.render import (
     render_validation,
     render_work_types,
 )  # noqa: F401 -- compatibility re-export
-
-
-DEFAULT_OPENCODE_SERVER = "http://127.0.0.1:4097"
-
-
-# ---------------------------------------------------------------------------
-# Operations -- delegate to esc_exec/Store only, no prompts/printing. These are
-# what the end-to-end test exercises against a real repository.
-# ---------------------------------------------------------------------------
-
-def resolve_repository(value: str, registry: Path) -> tuple[str, Path]:
-    """Resolve `value` as a registered repository ID, or as a filesystem path --
-    registering it under its detected repository ID if it isn't registered yet."""
-    candidate = Path(value).expanduser()
-    if candidate.is_dir():
-        path = candidate.resolve()
-        repository_id, _, _ = detect_build_system(path)
-        try:
-            resolve_route(registry, "repositories", repository_id)
-        except (KeyError, FileNotFoundError):
-            add_route(registry, "repositories", repository_id, path)
-        return repository_id, path
-    return value, resolve_route(registry, "repositories", value)
-
-
-def analyze(
-    store: Store, registry: Path, repository_id: str, repository_path: Path,
-    extra_resolved_components: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    proposal = analyze_repository(repository_path, registry, extra_resolved_components)
-    store.save_onboarding_proposal(repository_id, proposal)
-    return proposal
-
-
-def apply_answers(
-    store: Store, registry: Path, repository_id: str, repository_path: Path, answers: dict[str, Any],
-    resolved_components: dict[str, str] | None = None, excluded_component_ids: list[str] | None = None,
-) -> dict[str, Any]:
-    record = store.get_onboarding_proposal(repository_id)
-    if record is None:
-        raise ValueError(f"no onboarding proposal for `{repository_id}`; analyze first")
-    result = apply_onboarding_answers(
-        repository_path, record["proposal"], answers, registry, resolved_components, excluded_component_ids,
-    )
-    store.save_onboarding_answers(repository_id, answers, result)
-    return result
-
-
-def onboarding_process_metrics(store: Store, repository_id: str) -> dict[str, Any] | None:
-    """None until both a proposal and applied answers exist -- there is no elapsed
-    time to report for an in-progress or never-started onboarding."""
-    proposal_record = store.get_onboarding_proposal(repository_id)
-    answers_record = store.get_onboarding_answers(repository_id)
-    if proposal_record is None or answers_record is None:
-        return None
-    return process_metrics(
-        "onboarding", repository_id,
-        proposal_record["created_at"], answers_record["updated_at"],
-        len(proposal_record["proposal"].get("semantic_questions", [])),
-        len(answers_record["answers"]),
-    )
-
-
-def planning_process_metrics(store: Store, initiative_id: str) -> dict[str, Any] | None:
-    draft_record = store.get_plan_draft(initiative_id)
-    result_record = store.get_plan_result(initiative_id)
-    if draft_record is None or result_record is None:
-        return None
-    return process_metrics(
-        "planning", initiative_id,
-        draft_record["created_at"], result_record["updated_at"],
-        len(draft_record["questions"]), len(result_record["answers"]),
-    )
-
-
-def repository_status(store: Store, registry: Path, repository_id: str) -> dict[str, Any]:
-    proposal_record = store.get_onboarding_proposal(repository_id)
-    pending_record = store.get_pending_answers(repository_id)
-    answers_record = store.get_onboarding_answers(repository_id)
-    try:
-        path = resolve_route(registry, "repositories", repository_id)
-    except (KeyError, FileNotFoundError):
-        path = None
-    return {
-        "repository_id": repository_id,
-        "registered": path is not None,
-        "has_proposal": proposal_record is not None,
-        "has_pending_answers": pending_record is not None,
-        "has_applied_answers": answers_record is not None,
-        "instructions_file_present": bool(path and (path / ".esc-ai" / "INSTRUCTIONS.md").is_file()),
-        "workflows_directory_present": bool(path and (path / ".esc-ai" / "workflows").is_dir()),
-        "process_metrics": onboarding_process_metrics(store, repository_id),
-    }
-
-
-def validate_all(repository_path: Path, registry: Path) -> list[ValidationResult]:
-    results = list(validate_repository(repository_path, registry))
-    results += validate_indexes(repository_path)
-    results.append(validate_dependency_graph(repository_path))
-    return results
-
-
-def registered_repository_ids(registry: Path) -> list[str]:
-    return sorted(read_registry(registry).get("repositories", {}))
-
-
-def validate_system(registry: Path) -> dict[str, list[ValidationResult] | str]:
-    """
-    `validate_all` for every registered repository, keyed by repository ID -- the
-    "Validate the system" menu item, which `repository validate <id>` (the existing
-    per-repository command) has no equivalent of. A repository whose registered path
-    no longer resolves (moved/deleted since registration) reports as a plain error
-    string instead of raising -- one stale registration must not hide every other
-    repository's real validation result.
-    """
-    results: dict[str, list[ValidationResult] | str] = {}
-    for repository_id in registered_repository_ids(registry):
-        try:
-            repository_path = resolve_route(registry, "repositories", repository_id)
-        except (KeyError, FileNotFoundError) as exc:
-            results[repository_id] = str(exc)
-            continue
-        results[repository_id] = validate_all(repository_path, registry)
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Execution and resumption -- Phase 8. Workspace default below is a placeholder
-# only in the sense that it's a fixed choice (kind: worktree), not that it's
-# unfinished -- see its own docstring. Which policy profile a task starts from
-# is real, named, and configurable (see POLICY_PROFILES/resolve_default_policy
-# above and "Configure system" -> "Show / select default policy"); what remains
-# a genuine gap is anything *beyond* the category-level grant every profile
-# still shares -- external_paths scoping and budget/cost limits (see
-# plan/done/pre-flight-consent-and-bounded-autonomy.md's still-open sub-
-# questions in items 3 and 6) aren't enforced yet. The category-level grant
-# itself is not a placeholder: per that plan's layers 1-4, a task is granted
-# whatever categories its active profile allows outright (not fine-grained
-# per-path/per-action -- the plan's own "Non-goals" rejected that shape after
-# finding real tasks legitimately wander outside their declared component
-# scope), contained by HARD_DENY_SETTINGS (claude_code_adapter.py) and
-# disposable worktree isolation (default_workspace below), not by withholding
-# categories up front. `--yes` remains the human consent gate every time.
-# ---------------------------------------------------------------------------
-
-def default_workspace(repository_id: str) -> dict[str, Any]:
-    """
-    `kind: worktree` -- see plan/future/pre-flight-consent-and-bounded-autonomy.md
-    layer 4: the Claude Code adapter creates a disposable git worktree for the
-    task rather than editing the live checkout directly, so an unanticipated
-    change is contained and reviewable (via `task promote-checkpoint`) instead of
-    needing to be prevented mid-run. Unlike the policy default just below, this
-    isn't a "deliberately conservative placeholder" situation -- worktree
-    isolation is strictly safer than `local`/`process` with no compatibility
-    cost (see that plan doc's finding that host-level state like JDK/DB/
-    credentials is unaffected by which worktree is active), so there's no
-    reason to default to anything less here once the adapter actually supports
-    it.
-    """
-    return {
-        "schema_version": 1,
-        "workspace": {
-            "id": f"workspace-{repository_id}-default", "kind": "worktree",
-            "repository": repository_id, "isolation": "filesystem",
-        },
-    }
-
-
-def default_adapter(provider: dict[str, Any]) -> dict[str, Any]:
-    """
-    `provider` is the connected provider record from registry.active_provider --
-    {"id": "claude"|"openai", "route": "subscription"|"api-key"}. The subscription
-    route resolves to whichever first-party adapter that provider has (claude ->
-    ClaudeCodeAdapter, openai -> CodexAdapter); every api-key route goes through
-    OpenCode today. (gemini isn't currently offered at all -- see
-    plan/future/reintroduce-gemini-provider.md -- but this function still falls back to
-    OpenCode for any unrecognized id/route combination, matching KNOWN_PROVIDERS'
-    deny-by-default discipline rather than assuming only claude/openai ever appear
-    here.)
-    """
-    if provider["route"] == "subscription" and provider["id"] == "claude":
-        return {
-            "schema_version": 1,
-            "adapter": {
-                "id": "claude-code-claude", "kind": "agent-runtime", "provider": "claude-code",
-                "capabilities": ["sessions", "events", "tools", "permissions"],
-            },
-        }
-    if provider["route"] == "subscription" and provider["id"] == "openai":
-        return {
-            "schema_version": 1,
-            "adapter": {
-                "id": "codex-openai", "kind": "agent-runtime", "provider": "codex",
-                "capabilities": ["sessions", "events", "tools", "permissions"],
-            },
-        }
-    return {
-        "schema_version": 1,
-        "adapter": {
-            "id": "opencode-default", "kind": "agent-runtime", "provider": "opencode",
-            "capabilities": ["sessions", "events", "tools", "permissions"],
-        },
-    }
-
-
-def resolve_runtime(provider: dict[str, Any], registry: Path, opencode_server: str) -> Any:
-    if provider["route"] == "subscription" and provider["id"] == "claude":
-        return ClaudeCodeRuntime(registry)
-    if provider["route"] == "subscription" and provider["id"] == "openai":
-        return CodexRuntime(registry)
-    return OpenCodeRuntime(opencode_server, registry)
-
-
-def resolve_default_policy(registry: Path) -> dict[str, Any]:
-    """
-    Reads the registry's configured default policy profile (see "Configure
-    system" -> "Show / select default policy") and falls back to
-    DEFAULT_POLICY_PROFILE_ID if none is configured, or if a configured id no
-    longer names a known profile (e.g. an older escape-ai version's profile set
-    once offered something this version doesn't) -- an installation with nothing
-    configured behaves exactly as this system always has, no silent behavior
-    change on upgrade. Returns a fresh copy every call: POLICY_PROFILES is the
-    canonical in-memory definition and must never be mutated by a caller that
-    embeds the result into a task's contracts.
-    """
-    profile_id = default_policy_id(registry)
-    if profile_id not in POLICY_PROFILES:
-        profile_id = DEFAULT_POLICY_PROFILE_ID
-    return copy.deepcopy(POLICY_PROFILES[profile_id])
-
-
-# Per-provider subscription-route CLI info: static data only (which binary, how to
-# install it, how to interpret its auth-status output, what to tell someone who has
-# neither yet). The actual availability/auth-status checks are looked up by name at
-# call time (see _subscription_cli_available/_subscription_auth_status below), not
-# bound here -- binding the functions directly into this dict would capture them at
-# module-load time, which breaks monkeypatching `claude_cli_available` etc. in tests.
-# Real install commands, verified live 2026-07-19 -- `npm install -g
-# @anthropic-ai/claude-code` and `npm install -g @openai/codex` are each CLI's own
-# documented/well-established install path, not guessed.
-SUBSCRIPTION_CLI_INFO: dict[str, dict[str, Any]] = {
-    "claude": {
-        "binary": "claude",
-        "is_logged_in": lambda status: bool(status) and status.get("loggedIn") is True,
-        "install": "npm install -g @anthropic-ai/claude-code",
-        "login_hint": "run `claude auth login`",
-    },
-    "openai": {
-        "binary": "codex",
-        "is_logged_in": lambda status: bool(status) and status.lower().startswith("logged in"),
-        "install": "npm install -g @openai/codex",
-        "login_hint": "run `codex login`",
-    },
-}
-
-
-def _subscription_cli_available(provider_id: str) -> bool:
-    if provider_id == "claude":
-        return claude_cli_available()
-    if provider_id == "openai":
-        return codex_cli_available()
-    return False
-
-
-def _subscription_auth_status(provider_id: str) -> Any:
-    if provider_id == "claude":
-        return claude_auth_status()
-    if provider_id == "openai":
-        return codex_auth_status()
-    return None
-
-
-def connect_provider(registry: Path, provider_id: str, route: str) -> dict[str, Any]:
-    """
-    The one real write path for provider connection -- used by both the interactive
-    lazy prompt and `escape-ai provider auth`. Onboarding and planning never call
-    this; only task execution needs a connected provider (see native-cli-provider-
-    adapters.md's per-provider, asked-once-at-first-use design -- there is
-    deliberately no upfront "connect all your providers" wizard).
-
-    For the subscription route this is a real three-step confirm, not just a PATH
-    check: CLI installed -> CLI actually logged in (via each provider's own auth-
-    status command, not just presence) -> only then is the connection recorded.
-    """
-    if route == "subscription":
-        info = SUBSCRIPTION_CLI_INFO.get(provider_id)
-        if info is None:
-            raise ValueError(f"`{provider_id}` has no subscription-route adapter yet; use route=api-key.")
-        if not _subscription_cli_available(provider_id):
-            raise ValueError(
-                f"`{info['binary']}` CLI not found on PATH. Install it first: {info['install']}"
-                " -- or connect with route=api-key instead."
-            )
-        status = _subscription_auth_status(provider_id)
-        if not info["is_logged_in"](status):
-            raise ValueError(
-                f"`{info['binary']}` is installed but not logged in yet -- {info['login_hint']}, then try again."
-            )
-    set_provider(registry, provider_id, route)
-    return {"id": provider_id, "route": route}
-
-
-def active_work(store: Store, registry: Path) -> list[dict[str, Any]]:
-    """Read-only: every registered repository's `.esc-ai/workflows/active/*/task.yaml`,
-    cross-referenced against this orchestrator's own run/attempt records. No writes."""
-    catalog = read_registry(registry)
-    items: list[dict[str, Any]] = []
-    for repository_id, route in catalog.get("repositories", {}).items():
-        repository_path = Path(route["path"])
-        active_dir = repository_path / ".esc-ai" / "workflows" / "active"
-        if not active_dir.is_dir():
-            continue
-        for task_dir in sorted(path for path in active_dir.iterdir() if path.is_dir()):
-            task_path = task_dir / "task.yaml"
-            if not task_path.is_file():
-                continue
-            task_document = load_yaml(task_path)
-            task_id = task_document["task"]["id"]
-            latest_run = store.get_latest_run_for_task(task_id)
-            # "waiting-approval" (layer 6: a permission denial, not a code
-            # failure) gets a checkpoint candidate the same way "failed" does --
-            # both are a human-reviewable blocker, just a different kind of one.
-            candidate_present = bool(
-                latest_run and latest_run["status"] in ("failed", "waiting-approval") and latest_run.get("output_path")
-                and (Path(latest_run["output_path"]) / "checkpoint.yaml").is_file()
-            )
-            items.append({
-                "repository_id": repository_id,
-                "task_id": task_id,
-                "objective": task_document["task"]["objective"],
-                "attempts": store.get_attempt_count(task_id),
-                "latest_run_status": latest_run["status"] if latest_run else None,
-                "checkpoint_present": candidate_present,
-            })
-    return items
-
-
-def prior_consent(store: Store, task_id: str) -> dict[str, Any] | None:
-    """
-    The most recent run's recorded `bindings.consent`, if any -- see
-    plan/future/pre-flight-consent-and-bounded-autonomy.md layer 1. Only the
-    latest run is consulted (Store doesn't expose full run history queried by
-    task), which is sufficient: a task's consent history only matters for
-    deciding whether *this* dispatch needs to re-explain scope, and the most
-    recent attempt is always the relevant precedent for that. A task with no
-    prior run, or whose most recent run's adapter never wrote a consent
-    binding (e.g. a fake/legacy runtime in tests), returns None -- treated by
-    render_execution_preview as "not yet consented," never as an error.
-    """
-    run = store.get_latest_run_for_task(task_id)
-    if run is None:
-        return None
-    run_document = store.output_document(run["id"], "run.json")
-    if not run_document:
-        return None
-    return run_document.get("bindings", {}).get("consent")
-
-
-def run_detail(store: Store, task_id: str) -> dict[str, Any]:
-    """
-    "Observe a run" -- a read-only drill-down over a task's latest recorded run,
-    for the "Observe a run" menu item. Every value read here already exists in
-    `Store` and is already exposed once, over HTTP, by `api.py`'s `GET /runs/<id>`
-    family; this just surfaces the same reads through `escape-ai` directly, since
-    `execute_task` runs synchronously (the run named is always already finished by
-    the time this is callable -- there is nothing to tail live here, only to
-    review after the fact).
-
-    `checkpoint`, when present, is wrapped with a top-level `run_id` the same way
-    `checkpoint_candidate` already does, so `render_checkpoint_candidate` (built
-    for `promote-checkpoint`) can be reused verbatim rather than duplicated.
-    """
-    run = store.get_latest_run_for_task(task_id)
-    if run is None:
-        return {"run": None, "events": [], "summary": None, "checkpoint": None}
-    checkpoint_document = store.output_yaml(run["id"], "checkpoint.yaml")
-    checkpoint = {"run_id": run["id"], **checkpoint_document} if checkpoint_document else None
-    return {
-        "run": run,
-        "events": store.events(run["id"]),
-        "summary": store.summary(run["id"]),
-        "checkpoint": checkpoint,
-    }
-
-
-def _task_id_suggestions(repository_path: Path, task_id: str) -> list[str]:
-    """
-    Sibling task IDs under `.esc-ai/workflows/active/` for `repository_path`
-    whose directory name starts with the given (likely wrong) `task_id` -- the
-    documented multi-repo convention is always `<initiative-id>-<repository-id>`,
-    so a plain prefix match against the initiative-id-only guess a user is
-    likely to type covers the real dogfooding case directly (see
-    plan/done/cli-discoverability.md finding #1). No fuzzy-matching library;
-    scoped to this one repository, not a cross-repository search (see that
-    plan's open question 1). Returns `[]` when the active workflows directory
-    doesn't exist or nothing matches, so callers fall back to their own plain
-    "not found" message unchanged.
-    """
-    active_dir = repository_path / ".esc-ai" / "workflows" / "active"
-    if not active_dir.is_dir():
-        return []
-    return sorted(
-        path.name for path in active_dir.iterdir()
-        if path.is_dir() and path.name != task_id and path.name.startswith(task_id)
-    )
-
-
-def execute_task(
-    store: Store, registry: Path, repository_id: str, repository_path: Path, task_id: str, provider: dict[str, Any],
-    runtime: Any = None, opencode_server: str = DEFAULT_OPENCODE_SERVER,
-) -> dict[str, Any]:
-    """
-    Connects an approved, already-written task.yaml to real execution via the same
-    Scheduler/Store the HTTP daemon uses -- submit, wait for the background worker to
-    finish (queue.join()), then close. A CLI invocation is inherently one task at a
-    time, so this reuses Scheduler's exact submit/execute/update_run sequence
-    without needing a long-lived daemon around it.
-
-    `provider` must be an already-connected provider record (see
-    ensure_provider_configured) -- this function does not prompt or default one.
-    """
-    task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
-    if not task_path.is_file():
-        suggestions = _task_id_suggestions(repository_path, task_id)
-        hint = f"did you mean: {', '.join(suggestions)}?" if suggestions else "plan apply first"
-        raise ValueError(f"no task.yaml found for `{task_id}` in `{repository_id}`; {hint}")
-    contracts = {
-        "task": load_yaml(task_path),
-        "workspace": default_workspace(repository_id),
-        "adapter": default_adapter(provider),
-        "policy": resolve_default_policy(registry),
-    }
-    attempt = store.record_attempt(task_id)
-    scheduler = Scheduler(store, runtime or resolve_runtime(provider, registry, opencode_server), registry)
-    try:
-        _, run_id = scheduler.submit(contracts)
-        scheduler.queue.join()
-    finally:
-        scheduler.close()
-    run = store.get_run(run_id)
-    return {
-        "task_id": task_id, "run_id": run_id, "attempt": attempt,
-        "status": run["status"], "error": run.get("error"), "output_path": run.get("output_path"),
-    }
-
-
-def checkpoint_candidate(store: Store, repository_path: Path, task_id: str) -> dict[str, Any]:
-    """
-    A failed run's real checkpoint.yaml is the usual candidate. A *succeeded*
-    run has no checkpoint.yaml at all (that file is only ever written on the
-    failure/blocked path) -- but if it kept a worktree (a real diff worth
-    reviewing, see plan/future/pre-flight-consent-and-bounded-autonomy.md
-    layer 4), it still needs the same review-before-merge step, so one is
-    synthesized here rather than requiring `promote-checkpoint` to grow a
-    second, parallel command just to reach the same merge step.
-
-    A `succeeded-no-changes` run (see plan/done/run-outcome-surfacing.md) gets
-    the same synthesized-candidate treatment for the opposite reason: there's no
-    worktree diff to merge, but a human still needs a clear "here's why this
-    needs attention" surface instead of `promote-checkpoint` just raising "no
-    checkpoint candidate found."
-    """
-    run = store.get_latest_run_for_task(task_id)
-    if run is None or not run.get("output_path"):
-        raise ValueError(f"no run with a checkpoint candidate for `{task_id}`")
-    candidate_path = Path(run["output_path"]) / "checkpoint.yaml"
-    if candidate_path.is_file():
-        return {"run_id": run["id"], **load_yaml(candidate_path)}
-    task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
-    objective = load_yaml(task_path)["task"]["objective"] if task_path.is_file() else task_id
-    if run["status"] == "succeeded":
-        run_document = store.output_document(run["id"], "run.json")
-        worktree = (run_document or {}).get("bindings", {}).get("worktree")
-        if worktree and worktree.get("kept"):
-            return {
-                "run_id": run["id"], "worktree_merge_only": True,
-                "checkpoint": {"id": f"checkpoint-{task_id}", "task_id": task_id, "status": "ready-to-resume", "objective": objective},
-                "progress": {
-                    "completed": [], "decisions": [],
-                    "remaining": ["Review the worktree diff below, then re-run with --yes to merge it."],
-                    "blockers": [], "artifacts": [],
-                },
-            }
-    if run["status"] == "succeeded-no-changes":
-        return {
-            "run_id": run["id"], "no_changes": True,
-            "checkpoint": {"id": f"checkpoint-{task_id}", "task_id": task_id, "status": "ready-to-resume", "objective": objective},
-            "progress": {
-                "completed": [], "decisions": [],
-                "remaining": [
-                    "This run produced no changes and may need clarification or a different "
-                    "approach -- review the run's own summary/artifact before deciding whether "
-                    "to retry.",
-                ],
-                "blockers": [], "artifacts": [],
-            },
-        }
-    raise ValueError(f"no checkpoint candidate found for `{task_id}`")
-
-
-def promote_checkpoint(repository_path: Path, task_id: str, candidate: dict[str, Any]) -> Path | None:
-    """Promotes a transient run-failure checkpoint candidate into the durable,
-    committable location -- always after human review of `candidate`'s contents,
-    never a blind copy triggered automatically on failure.
-
-    `candidate["worktree_merge_only"]` (set only by checkpoint_candidate's
-    synthesized succeeded-run case above) merges the task's worktree branch
-    back and removes the worktree instead of writing a durable checkpoint --
-    there's no real blocker to record, the merge is the whole point, so this
-    returns None rather than a checkpoint path. A *failed* run's checkpoint
-    never auto-merges here, even if it kept a worktree: independent
-    verification already confirmed a succeeded run was clean (see
-    task-orchestration-and-verification-loop.md's "trust the artifact, not the
-    agent"), but a failed run's worktree may hold half-finished or broken
-    edits -- merging those needs a human decision this function doesn't make
-    for them. That worktree stays in place for manual inspection
-    (`esc_exec.worktree.merge_worktree`/`remove_worktree` directly) until a
-    dedicated resolution verb exists (see that plan doc's open question 5).
-
-    `candidate["no_changes"]` (set only by checkpoint_candidate's synthesized
-    succeeded-no-changes case) is the same "nothing to persist" shape as
-    worktree_merge_only, just with nothing to merge either -- there's no
-    worktree and no durable blocker, only a human having read the notice above.
-    Returns None the same way."""
-    if candidate.get("worktree_merge_only"):
-        merge_worktree(repository_path, task_id)
-        return None
-    if candidate.get("no_changes"):
-        return None
-    checkpoint, progress = candidate["checkpoint"], candidate["progress"]
-    task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
-    if not task_path.is_file():
-        raise ValueError(f"no task.yaml for `{task_id}` to attach the checkpoint to")
-    kwargs = dict(
-        run_id=checkpoint.get("run_id"), status=checkpoint.get("status", "blocked"),
-        completed=progress.get("completed"), decisions=progress.get("decisions"),
-        remaining=progress.get("remaining"), blockers=progress.get("blockers"),
-        artifacts=progress.get("artifacts"), last_event_sequence=progress.get("last_event_sequence"),
-    )
-    if checkpoint_path(repository_path, task_id).is_file():
-        return update_checkpoint(repository_path, task_id, **kwargs)
-    return create_checkpoint(repository_path, task_path, **kwargs)
-
-
-def draft_plan(store: Store, registry: Path, initiative_id: str, work_type: str, objective: str, repository_values: list[str]) -> dict[str, Any]:
-    if work_type not in WORK_TYPES:
-        raise ValueError(f"work_type must be one of: {', '.join(WORK_TYPES)}")
-    repositories: list[str] = []
-    routing: dict[str, list[dict[str, Any]]] = {}
-    matches_by_repo: dict[str, list] = {}
-    for value in repository_values:
-        repository_id, repository_path = resolve_repository(value, registry)
-        repositories.append(repository_id)
-        matches = route_objective(repository_path, objective)
-        matches_by_repo[repository_id] = matches
-        routing[repository_id] = [
-            {"component_id": match.component_id, "score": match.score, "reasons": list(match.reasons)}
-            for match in matches
-        ]
-    questions = planning_questions(matches_by_repo)
-    store.save_plan_draft(initiative_id, work_type, objective, repositories, routing, questions)
-    return {
-        "initiative_id": initiative_id, "work_type": work_type, "objective": objective,
-        "repositories": repositories, "routing": routing, "questions": questions,
-    }
-
-
-def apply_plan(
-    store: Store, registry: Path, initiative_id: str, answers: dict[str, Any],
-    local_architecture_notes_by_repo: dict[str, list[str]] | None = None,
-) -> tuple[dict[str, Any], dict[str, list[str]] | None]:
-    """
-    A single-repository plan writes one task directly. A multi-repository plan
-    writes one cross-linked task per repository, using each repository's own
-    `answers["depends_on"]` entry (see plan/active/multi-repository-dependency-
-    graph-planning.md) -- an arbitrary acyclic graph, not just a straight chain --
-    when one was actually supplied; a repository missing from that dict (or the
-    whole `depends_on` key missing entirely, e.g. an answers.json predating this
-    field) falls back to depending on the repository immediately before it in
-    declared order, exactly reproducing this function's original behavior. Both
-    paths validate every reference before writing anything (see
-    generate_single_repository_workflow/generate_multi_repository_workflow, which
-    also rejects an unresolvable or cyclic depends_on graph).
-
-    local_architecture_notes_by_repo (see
-    offer_local_architecture_note_interactive) is keyed by repository_id, same
-    shape as answers["components"] -- omitted entirely for the non-interactive
-    CLI path, which never runs that check.
-
-    Returns `(result, dependency_graph)` -- `dependency_graph` (plan/done/
-    run-outcome-surfacing.md finding #7, generalized from a single chain to a real
-    graph by the plan above) maps each repository to the list of other repository
-    ids its task actually depends on, surfaced explicitly so `render_plan_result`
-    can print it instead of leaving it only discoverable by reading `task.yaml`.
-    None for a single-repository plan. `result` itself is unchanged in shape --
-    only `store.save_plan_result` persists it, and that call site doesn't need the
-    graph, which is fully re-derivable from the written task.yaml files at any time.
-    """
-    draft = store.get_plan_draft(initiative_id)
-    if draft is None:
-        raise ValueError(f"no plan draft for `{initiative_id}`; draft first")
-    repositories = draft["repositories"]
-    components_by_repo = answers.get("components", {})
-    completion_conditions = answers.get("completion_conditions", [])
-    scope_boundary = answers.get("scope_boundary", "")
-    rollout_needs = answers.get("rollout_needs", "")
-    notes_by_repo = local_architecture_notes_by_repo or {}
-
-    if len(repositories) == 1:
-        repository_id = repositories[0]
-        _, repository_path = resolve_repository(repository_id, registry)
-        written = generate_single_repository_workflow(
-            repository_path, repository_id, initiative_id, draft["objective"], draft["work_type"],
-            components_by_repo.get(repository_id, []), scope_boundary, completion_conditions, rollout_needs,
-            local_architecture_notes=notes_by_repo.get(repository_id),
-        )
-        result = {repository_id: [str(path.relative_to(repository_path)) for path in written]}
-        dependency_graph = None
-    else:
-        depends_on_answers = answers.get("depends_on")
-        tasks: dict[str, Any] = {}
-        dependency_graph = {}
-        for index, repository_id in enumerate(repositories):
-            previous_repository_id = repositories[index - 1] if index > 0 else None
-            if depends_on_answers is not None and repository_id in depends_on_answers:
-                dependency_repo_ids = depends_on_answers[repository_id]
-            else:
-                dependency_repo_ids = [previous_repository_id] if previous_repository_id else []
-            dependency_graph[repository_id] = dependency_repo_ids
-
-            task_id = f"{initiative_id}-{repository_id}"
-            task: dict[str, Any] = {
-                "task_id": task_id,
-                "components": components_by_repo.get(repository_id, []),
-                "scope_boundary": scope_boundary,
-                "completion_conditions": completion_conditions,
-                "rollout_needs": rollout_needs,
-            }
-            if dependency_repo_ids:
-                task["depends_on"] = [f"{dep_repo}/{initiative_id}-{dep_repo}" for dep_repo in dependency_repo_ids]
-            if notes_by_repo.get(repository_id):
-                task["local_architecture_notes"] = notes_by_repo[repository_id]
-            tasks[repository_id] = task
-        written_paths = generate_multi_repository_workflow(registry, initiative_id, draft["objective"], draft["work_type"], tasks)
-        result = {}
-        for repository_id, paths in written_paths.items():
-            _, repository_path = resolve_repository(repository_id, registry)
-            result[repository_id] = [str(path.relative_to(repository_path)) for path in paths]
-
-    store.save_plan_result(initiative_id, answers, result)
-    return result, dependency_graph
+from esc_orchestrator.application.planning import (
+    apply_plan,
+    draft_plan,
+)  # noqa: F401 -- compatibility re-export
+from esc_orchestrator.application.providers import (
+    DEFAULT_OPENCODE_SERVER,
+    SUBSCRIPTION_CLI_INFO,
+    _subscription_auth_status,
+    _subscription_cli_available,
+    connect_provider,
+    default_adapter,
+    default_workspace,
+    resolve_default_policy,
+    resolve_runtime,
+)  # noqa: F401 -- compatibility re-export
+from esc_orchestrator.application.repositories import (
+    analyze,
+    apply_answers,
+    onboarding_process_metrics,
+    planning_process_metrics,
+    registered_repository_ids,
+    repository_status,
+    resolve_repository,
+    validate_all,
+    validate_system,
+)  # noqa: F401 -- compatibility re-export
+from esc_orchestrator.application.runs import (
+    _task_id_suggestions,
+    active_work,
+    checkpoint_candidate,
+    execute_task,
+    prior_consent,
+    promote_checkpoint,
+    run_detail,
+)  # noqa: F401 -- compatibility re-export
+from esc_orchestrator.domain.intents import (
+    INTENT_SUMMARIES,
+    INTENT_WORK_TYPES,
+    LEGACY_PLAN_SUBCOMMANDS,
+    intent_for_work_type,
+)  # noqa: F401 -- compatibility re-export
+from esc_orchestrator.domain.policy_profiles import (
+    DEFAULT_POLICY_PROFILE_ID,
+    POLICY_PROFILES,
+)  # noqa: F401 -- compatibility re-export
+from esc_orchestrator.entrypoints.cli.render import (
+    BANNER,
+    CHAT_ABOUT_IT_OPTION,
+    MENU,
+    _STAGE_KIND_LABELS,
+    render_active_work,
+    render_apply_result,
+    render_checkpoint_candidate,
+    render_execution_preview,
+    render_execution_result,
+    render_intent_overview,
+    render_menu,
+    render_menu_options,
+    render_onboarding_map,
+    render_plan_draft,
+    render_plan_result,
+    render_policy_status,
+    render_procedure,
+    render_proposal,
+    render_provider_status,
+    render_repository_list,
+    render_roadmap,
+    render_run_detail,
+    render_status,
+    render_system_validation,
+    render_validation,
+    render_work_types,
+)  # noqa: F401 -- compatibility re-export
 
 
 # ---------------------------------------------------------------------------

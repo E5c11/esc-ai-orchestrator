@@ -15,6 +15,7 @@ from esc_exec.roadmap import load_project_roadmap, save_project_roadmap
 from esc_exec.yaml_io import load_yaml, write_yaml
 
 from esc_orchestrator import escape_ai_cli as cli
+from esc_orchestrator.application import providers
 from esc_orchestrator.store import Store
 
 
@@ -853,9 +854,9 @@ class InteractiveOnboardingTests(unittest.TestCase):
             _make_gradle_repository(repository_dir)
             store = Store(root / "db.sqlite")
 
-            original_available, original_status = cli.claude_cli_available, cli.claude_auth_status
-            cli.claude_cli_available = lambda binary="claude": True
-            cli.claude_auth_status = lambda binary="claude": {"loggedIn": True, "subscriptionType": "pro"}
+            original_available, original_status = providers.claude_cli_available, providers.claude_auth_status
+            providers.claude_cli_available = lambda binary="claude": True
+            providers.claude_auth_status = lambda binary="claude": {"loggedIn": True, "subscriptionType": "pro"}
             original_suggest = cli.suggest_onboarding_answers
             cli.suggest_onboarding_answers = lambda client, repository_path, purpose_ids, frameworks_ids: {
                 "content": {"purpose": "Owns lesson publishing."}
@@ -877,7 +878,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
                     code = cli.run_onboarding_interactive(store, registry)
             finally:
                 builtins.input = original_input
-                cli.claude_cli_available, cli.claude_auth_status = original_available, original_status
+                providers.claude_cli_available, providers.claude_auth_status = original_available, original_status
                 cli.suggest_onboarding_answers = original_suggest
 
             self.assertEqual(0, code)
@@ -3468,14 +3469,14 @@ class ConfigureSystemInteractiveTests(unittest.TestCase):
             responses = iter(["2", "1", "1", "1", "6"])
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
-            original_available, original_status = cli.claude_cli_available, cli.claude_auth_status
-            cli.claude_cli_available = lambda binary="claude": True
-            cli.claude_auth_status = lambda binary="claude": {"loggedIn": True, "subscriptionType": "pro"}
+            original_available, original_status = providers.claude_cli_available, providers.claude_auth_status
+            providers.claude_cli_available = lambda binary="claude": True
+            providers.claude_auth_status = lambda binary="claude": {"loggedIn": True, "subscriptionType": "pro"}
             try:
                 cli.run_configure_interactive(registry)
             finally:
                 builtins.input = original_input
-                cli.claude_cli_available, cli.claude_auth_status = original_available, original_status
+                providers.claude_cli_available, providers.claude_auth_status = original_available, original_status
             self.assertEqual({"id": "claude", "route": "subscription"}, cli.active_provider(registry))
 
 
@@ -3668,94 +3669,94 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual({"id": "openai", "route": "api-key"}, provider)
 
     def test_connect_provider_subscription_requires_claude_cli_on_path(self):
-        original = cli.claude_cli_available
-        cli.claude_cli_available = lambda binary="claude": False
+        original = providers.claude_cli_available
+        providers.claude_cli_available = lambda binary="claude": False
         try:
             with TemporaryDirectory() as temp:
                 with self.assertRaisesRegex(ValueError, "not found on PATH"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "claude", "subscription")
         finally:
-            cli.claude_cli_available = original
+            providers.claude_cli_available = original
 
     def test_connect_provider_subscription_succeeds_when_claude_cli_present_and_logged_in(self):
-        original_available, original_status = cli.claude_cli_available, cli.claude_auth_status
-        cli.claude_cli_available = lambda binary="claude": True
-        cli.claude_auth_status = lambda binary="claude": {"loggedIn": True, "subscriptionType": "pro"}
+        original_available, original_status = providers.claude_cli_available, providers.claude_auth_status
+        providers.claude_cli_available = lambda binary="claude": True
+        providers.claude_auth_status = lambda binary="claude": {"loggedIn": True, "subscriptionType": "pro"}
         try:
             with TemporaryDirectory() as temp:
                 registry = Path(temp) / "registry.yaml"
                 provider = cli.connect_provider(registry, "claude", "subscription")
                 self.assertEqual({"id": "claude", "route": "subscription"}, provider)
         finally:
-            cli.claude_cli_available, cli.claude_auth_status = original_available, original_status
+            providers.claude_cli_available, providers.claude_auth_status = original_available, original_status
 
     def test_connect_provider_subscription_rejects_when_installed_but_not_logged_in(self):
-        original_available, original_status = cli.claude_cli_available, cli.claude_auth_status
-        cli.claude_cli_available = lambda binary="claude": True
-        cli.claude_auth_status = lambda binary="claude": {"loggedIn": False}
+        original_available, original_status = providers.claude_cli_available, providers.claude_auth_status
+        providers.claude_cli_available = lambda binary="claude": True
+        providers.claude_auth_status = lambda binary="claude": {"loggedIn": False}
         try:
             with TemporaryDirectory() as temp:
                 with self.assertRaisesRegex(ValueError, "not logged in"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "claude", "subscription")
         finally:
-            cli.claude_cli_available, cli.claude_auth_status = original_available, original_status
+            providers.claude_cli_available, providers.claude_auth_status = original_available, original_status
 
     def test_connect_provider_subscription_rejects_when_auth_status_check_fails(self):
         # claude_auth_status returns None on any failure (CLI missing mid-check,
         # non-zero exit, unparseable output) -- must be treated as not-logged-in,
         # never as "unknown, assume fine."
-        original_available, original_status = cli.claude_cli_available, cli.claude_auth_status
-        cli.claude_cli_available = lambda binary="claude": True
-        cli.claude_auth_status = lambda binary="claude": None
+        original_available, original_status = providers.claude_cli_available, providers.claude_auth_status
+        providers.claude_cli_available = lambda binary="claude": True
+        providers.claude_auth_status = lambda binary="claude": None
         try:
             with TemporaryDirectory() as temp:
                 with self.assertRaisesRegex(ValueError, "not logged in"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "claude", "subscription")
         finally:
-            cli.claude_cli_available, cli.claude_auth_status = original_available, original_status
+            providers.claude_cli_available, providers.claude_auth_status = original_available, original_status
 
     def test_connect_provider_subscription_error_names_install_command(self):
-        original = cli.claude_cli_available
-        cli.claude_cli_available = lambda binary="claude": False
+        original = providers.claude_cli_available
+        providers.claude_cli_available = lambda binary="claude": False
         try:
             with TemporaryDirectory() as temp:
                 with self.assertRaisesRegex(ValueError, "npm install -g @anthropic-ai/claude-code"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "claude", "subscription")
         finally:
-            cli.claude_cli_available = original
+            providers.claude_cli_available = original
 
     def test_connect_provider_codex_subscription_succeeds_when_logged_in(self):
-        original_available, original_status = cli.codex_cli_available, cli.codex_auth_status
-        cli.codex_cli_available = lambda binary="codex": True
-        cli.codex_auth_status = lambda binary="codex": "Logged in using ChatGPT"
+        original_available, original_status = providers.codex_cli_available, providers.codex_auth_status
+        providers.codex_cli_available = lambda binary="codex": True
+        providers.codex_auth_status = lambda binary="codex": "Logged in using ChatGPT"
         try:
             with TemporaryDirectory() as temp:
                 registry = Path(temp) / "registry.yaml"
                 provider = cli.connect_provider(registry, "openai", "subscription")
                 self.assertEqual({"id": "openai", "route": "subscription"}, provider)
         finally:
-            cli.codex_cli_available, cli.codex_auth_status = original_available, original_status
+            providers.codex_cli_available, providers.codex_auth_status = original_available, original_status
 
     def test_connect_provider_codex_subscription_rejects_when_not_installed(self):
-        original = cli.codex_cli_available
-        cli.codex_cli_available = lambda binary="codex": False
+        original = providers.codex_cli_available
+        providers.codex_cli_available = lambda binary="codex": False
         try:
             with TemporaryDirectory() as temp:
                 with self.assertRaisesRegex(ValueError, "npm install -g @openai/codex"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "openai", "subscription")
         finally:
-            cli.codex_cli_available = original
+            providers.codex_cli_available = original
 
     def test_connect_provider_codex_subscription_rejects_when_not_logged_in(self):
-        original_available, original_status = cli.codex_cli_available, cli.codex_auth_status
-        cli.codex_cli_available = lambda binary="codex": True
-        cli.codex_auth_status = lambda binary="codex": None
+        original_available, original_status = providers.codex_cli_available, providers.codex_auth_status
+        providers.codex_cli_available = lambda binary="codex": True
+        providers.codex_auth_status = lambda binary="codex": None
         try:
             with TemporaryDirectory() as temp:
                 with self.assertRaisesRegex(ValueError, "not logged in"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "openai", "subscription")
         finally:
-            cli.codex_cli_available, cli.codex_auth_status = original_available, original_status
+            providers.codex_cli_available, providers.codex_auth_status = original_available, original_status
 
     def test_provider_auth_dispatch_connects_api_key_route(self):
         with TemporaryDirectory() as temp:
@@ -3788,9 +3789,9 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(2, ctx.exception.code)
 
     def test_provider_auth_dispatch_connects_codex_subscription_without_opencode_note(self):
-        original_available, original_status = cli.codex_cli_available, cli.codex_auth_status
-        cli.codex_cli_available = lambda binary="codex": True
-        cli.codex_auth_status = lambda binary="codex": "Logged in using ChatGPT"
+        original_available, original_status = providers.codex_cli_available, providers.codex_auth_status
+        providers.codex_cli_available = lambda binary="codex": True
+        providers.codex_auth_status = lambda binary="codex": "Logged in using ChatGPT"
         try:
             with TemporaryDirectory() as temp:
                 root = Path(temp)
@@ -3809,14 +3810,14 @@ class ProviderTests(unittest.TestCase):
                 # whether the provider merely has subscription capability at all
                 self.assertNotIn("routes through OpenCode", out)
         finally:
-            cli.codex_cli_available, cli.codex_auth_status = original_available, original_status
+            providers.codex_cli_available, providers.codex_auth_status = original_available, original_status
 
     def test_provider_auth_dispatch_defaults_openai_to_subscription_route(self):
         # args.route defaults to subscription for any subscription-capable provider
         # when --route isn't passed -- openai must get this now too, not just claude.
-        original_available, original_status = cli.codex_cli_available, cli.codex_auth_status
-        cli.codex_cli_available = lambda binary="codex": True
-        cli.codex_auth_status = lambda binary="codex": "Logged in using ChatGPT"
+        original_available, original_status = providers.codex_cli_available, providers.codex_auth_status
+        providers.codex_cli_available = lambda binary="codex": True
+        providers.codex_auth_status = lambda binary="codex": "Logged in using ChatGPT"
         try:
             with TemporaryDirectory() as temp:
                 root = Path(temp)
@@ -3832,7 +3833,7 @@ class ProviderTests(unittest.TestCase):
                 self.assertEqual(0, code)
                 self.assertIn("CONNECTED  openai (subscription)", out)
         finally:
-            cli.codex_cli_available, cli.codex_auth_status = original_available, original_status
+            providers.codex_cli_available, providers.codex_auth_status = original_available, original_status
 
     def test_prompt_provider_setup_interactive_connects_api_key_route(self):
         # No real provider is currently known-but-not-subscription-capable (gemini
@@ -3860,14 +3861,14 @@ class ProviderTests(unittest.TestCase):
             responses = iter(["1", "1", "1"])  # connect -> claude -> subscription
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
-            original_available, original_status = cli.claude_cli_available, cli.claude_auth_status
-            cli.claude_cli_available = lambda binary="claude": True
-            cli.claude_auth_status = lambda binary="claude": {"loggedIn": True, "subscriptionType": "pro"}
+            original_available, original_status = providers.claude_cli_available, providers.claude_auth_status
+            providers.claude_cli_available = lambda binary="claude": True
+            providers.claude_auth_status = lambda binary="claude": {"loggedIn": True, "subscriptionType": "pro"}
             try:
                 provider = cli.prompt_provider_setup_interactive(registry)
             finally:
                 builtins.input = original_input
-                cli.claude_cli_available, cli.claude_auth_status = original_available, original_status
+                providers.claude_cli_available, providers.claude_auth_status = original_available, original_status
             self.assertEqual({"id": "claude", "route": "subscription"}, provider)
 
     def test_prompt_provider_setup_interactive_decline_returns_none(self):
@@ -3903,12 +3904,12 @@ class ProviderTests(unittest.TestCase):
         from esc_exec.registry import set_provider
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
-            original_available = cli.claude_cli_available
-            cli.claude_cli_available = lambda binary="claude": True
+            original_available = providers.claude_cli_available
+            providers.claude_cli_available = lambda binary="claude": True
             try:
                 set_provider(registry, "claude", "subscription")
             finally:
-                cli.claude_cli_available = original_available
+                providers.claude_cli_available = original_available
 
             original_suggest = cli.suggest_onboarding_answers
             calls = []
@@ -3927,12 +3928,12 @@ class ProviderTests(unittest.TestCase):
         from esc_exec.registry import set_provider
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
-            original_available = cli.claude_cli_available
-            cli.claude_cli_available = lambda binary="claude": True
+            original_available = providers.claude_cli_available
+            providers.claude_cli_available = lambda binary="claude": True
             try:
                 set_provider(registry, "claude", "subscription")
             finally:
-                cli.claude_cli_available = original_available
+                providers.claude_cli_available = original_available
 
             original_suggest = cli.suggest_onboarding_answers
             def raising_suggest_onboarding_answers(client, repository_path, purpose_ids, frameworks_ids):
