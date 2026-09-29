@@ -14,7 +14,7 @@ from esc_exec.read_only import effective_policy, is_read_only, state_violations
 from esc_exec.registry import resolve_route
 from esc_exec.task_context import build_task_context, build_verification_plan
 from esc_exec.verification_execution import execute_verification_plan
-from esc_exec.worktree import repository_state
+from esc_exec.worktree import repository_state, verification_root
 from esc_exec.yaml_io import write_yaml
 from esc_orchestrator.application.doctor import architecture_coverage_blockers
 
@@ -143,7 +143,12 @@ class _AdapterRuntime:
                     ])
                 return run_dir
             write_json(run_dir / "verification-plan.json", plan)
-            execute_verification_plan(plan, repository, run_dir)
+            # Verify the tree the agent actually changed: a run that edited a disposable worktree has its changes
+            # only there until a human promotes them, so running the gates in the live checkout would test the
+            # code as it was BEFORE the agent started. The plan itself is built from the live checkout above, so
+            # an agent cannot rewrite its own gates by editing the verification profile in its worktree.
+            verify_root = verification_root(repository, contracts["task"]["task"]["id"], run_dir)
+            execute_verification_plan(plan, verify_root, run_dir, relative_to=repository)
             return run_dir
 
 
