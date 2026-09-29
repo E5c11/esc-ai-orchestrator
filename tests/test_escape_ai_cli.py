@@ -16,6 +16,9 @@ from esc_exec.yaml_io import load_yaml, write_yaml
 
 from esc_orchestrator import escape_ai_cli as cli
 from esc_orchestrator.application import providers
+from esc_orchestrator.entrypoints.cli.interactive import conversation as conversation_flow
+from esc_orchestrator.entrypoints.cli.interactive import onboarding as onboarding_flow
+from esc_orchestrator.entrypoints.cli.interactive import planning as planning_flow
 from esc_orchestrator.store import Store
 
 
@@ -793,8 +796,8 @@ class InteractiveOnboardingTests(unittest.TestCase):
             _make_gradle_repository(repository_dir)
             store = Store(root / "db.sqlite")
 
-            original_suggest = cli.suggest_answers_via_provider
-            cli.suggest_answers_via_provider = lambda registry, repository_path, purpose_ids, frameworks_ids, resume_session_id=None: {
+            original_suggest = onboarding_flow.suggest_answers_via_provider
+            onboarding_flow.suggest_answers_via_provider = lambda registry, repository_path, purpose_ids, frameworks_ids, resume_session_id=None: {
                 "content": {"purpose": "Owns lesson publishing."}
             }
             responses = iter([str(repository_dir), "", "2", "", "1", "no"])  # include all, decline connect offer, then blank -- accept the (mocked) suggestion
@@ -806,7 +809,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
                     code = cli.run_onboarding_interactive(store, registry)
             finally:
                 builtins.input = original_input
-                cli.suggest_answers_via_provider = original_suggest
+                onboarding_flow.suggest_answers_via_provider = original_suggest
 
             self.assertEqual(0, code)
             self.assertIn("Suggested: Owns lesson publishing.", buffer.getvalue())
@@ -822,8 +825,8 @@ class InteractiveOnboardingTests(unittest.TestCase):
             _make_gradle_repository(repository_dir)
             store = Store(root / "db.sqlite")
 
-            original_suggest = cli.suggest_answers_via_provider
-            cli.suggest_answers_via_provider = lambda registry, repository_path, purpose_ids, frameworks_ids, resume_session_id=None: {
+            original_suggest = onboarding_flow.suggest_answers_via_provider
+            onboarding_flow.suggest_answers_via_provider = lambda registry, repository_path, purpose_ids, frameworks_ids, resume_session_id=None: {
                 "content": {"purpose": "Owns lesson publishing."}
             }
             responses = iter([str(repository_dir), "", "2", "Actually owns something else.", "1", "no"])
@@ -835,7 +838,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
                     code = cli.run_onboarding_interactive(store, registry)
             finally:
                 builtins.input = original_input
-                cli.suggest_answers_via_provider = original_suggest
+                onboarding_flow.suggest_answers_via_provider = original_suggest
 
             self.assertEqual(0, code)
             manifest_text = component_manifest_path(repository_dir, "content").read_text(encoding="utf-8")
@@ -857,8 +860,8 @@ class InteractiveOnboardingTests(unittest.TestCase):
             original_available, original_status = providers.claude_cli_available, providers.claude_auth_status
             providers.claude_cli_available = lambda binary="claude": True
             providers.claude_auth_status = lambda binary="claude": {"loggedIn": True, "subscriptionType": "pro"}
-            original_suggest = cli.suggest_onboarding_answers
-            cli.suggest_onboarding_answers = lambda client, repository_path, purpose_ids, frameworks_ids: {
+            original_suggest = onboarding_flow.suggest_onboarding_answers
+            onboarding_flow.suggest_onboarding_answers = lambda client, repository_path, purpose_ids, frameworks_ids: {
                 "content": {"purpose": "Owns lesson publishing."}
             }
 
@@ -879,7 +882,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             finally:
                 builtins.input = original_input
                 providers.claude_cli_available, providers.claude_auth_status = original_available, original_status
-                cli.suggest_onboarding_answers = original_suggest
+                onboarding_flow.suggest_onboarding_answers = original_suggest
 
             self.assertEqual(0, code)
             output = buffer.getvalue()
@@ -1090,12 +1093,12 @@ class ModuleResolutionInteractiveTests(unittest.TestCase):
             store = Store(root / "db.sqlite")
             set_provider(registry, "claude", "subscription")
 
-            original_suggest = cli.suggest_unresolved_components
-            cli.suggest_unresolved_components = lambda client, repository_path, unresolved: {
+            original_suggest = onboarding_flow.suggest_unresolved_components
+            onboarding_flow.suggest_unresolved_components = lambda client, repository_path, unresolved: {
                 "resolved": {":ghost": "actual-ghost-dir"}, "session_id": "ses-1",
             }
-            original_groundable = cli.suggest_answers_via_provider
-            cli.suggest_answers_via_provider = lambda *args, **kwargs: {}
+            original_groundable = onboarding_flow.suggest_answers_via_provider
+            onboarding_flow.suggest_answers_via_provider = lambda *args, **kwargs: {}
 
             responses = iter([
                 str(repository_dir),  # repository path
@@ -1113,8 +1116,8 @@ class ModuleResolutionInteractiveTests(unittest.TestCase):
                     code = cli.run_onboarding_interactive(store, registry)
             finally:
                 builtins.input = original_input
-                cli.suggest_unresolved_components = original_suggest
-                cli.suggest_answers_via_provider = original_groundable
+                onboarding_flow.suggest_unresolved_components = original_suggest
+                onboarding_flow.suggest_answers_via_provider = original_groundable
 
             self.assertEqual(0, code)
             output = buffer.getvalue()
@@ -1184,7 +1187,7 @@ class OfferLocalArchitectureNoteInteractiveTests(unittest.TestCase):
     def test_no_provider_connected_returns_empty_without_calling_out(self):
         with TemporaryDirectory() as temp:
             registry, repository_dir = self._setup(temp)
-            notes = cli.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
+            notes = planning_flow.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
         self.assertEqual([], notes)
 
     def test_framework_route_unresolvable_returns_empty(self):
@@ -1200,39 +1203,39 @@ class OfferLocalArchitectureNoteInteractiveTests(unittest.TestCase):
             write_yaml(manifest_path, manifest)
             generate_indexes(repository_dir)
             set_provider(registry, "claude", "subscription")
-            notes = cli.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
+            notes = planning_flow.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
         self.assertEqual([], notes)
 
     def test_covered_result_returns_empty(self):
         with TemporaryDirectory() as temp:
             registry, repository_dir = self._setup(temp)
             set_provider(registry, "claude", "subscription")
-            original = cli.suggest_architecture_coverage_gap
-            cli.suggest_architecture_coverage_gap = lambda client, framework_root, objective, documents: {
+            original = planning_flow.suggest_architecture_coverage_gap
+            planning_flow.suggest_architecture_coverage_gap = lambda client, framework_root, objective, documents: {
                 "covered": True, "reasoning": None, "suggested_title": None,
             }
             try:
-                notes = cli.offer_local_architecture_note_interactive(registry, repository_dir, "Add a REST endpoint.", ["content"])
+                notes = planning_flow.offer_local_architecture_note_interactive(registry, repository_dir, "Add a REST endpoint.", ["content"])
             finally:
-                cli.suggest_architecture_coverage_gap = original
+                planning_flow.suggest_architecture_coverage_gap = original
         self.assertEqual([], notes)
 
     def test_gap_declined_returns_empty_and_writes_no_file(self):
         with TemporaryDirectory() as temp:
             registry, repository_dir = self._setup(temp)
             set_provider(registry, "claude", "subscription")
-            original = cli.suggest_architecture_coverage_gap
-            cli.suggest_architecture_coverage_gap = lambda client, framework_root, objective, documents: {
+            original = planning_flow.suggest_architecture_coverage_gap
+            planning_flow.suggest_architecture_coverage_gap = lambda client, framework_root, objective, documents: {
                 "covered": False, "reasoning": "Not covered.", "suggested_title": "Background Jobs",
             }
             responses = iter(["2"])  # decline the "draft a note?" confirm
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
-                notes = cli.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
+                notes = planning_flow.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
             finally:
                 builtins.input = original_input
-                cli.suggest_architecture_coverage_gap = original
+                planning_flow.suggest_architecture_coverage_gap = original
         self.assertEqual([], notes)
         self.assertFalse((repository_dir / ".esc-ai" / "local-architecture").exists())
 
@@ -1240,18 +1243,18 @@ class OfferLocalArchitectureNoteInteractiveTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             registry, repository_dir = self._setup(temp)
             set_provider(registry, "claude", "subscription")
-            original = cli.suggest_architecture_coverage_gap
-            cli.suggest_architecture_coverage_gap = lambda client, framework_root, objective, documents: {
+            original = planning_flow.suggest_architecture_coverage_gap
+            planning_flow.suggest_architecture_coverage_gap = lambda client, framework_root, objective, documents: {
                 "covered": False, "reasoning": "Not covered.", "suggested_title": "Background Jobs",
             }
             responses = iter(["1", "Use a queue-backed worker."])  # accept, then describe the guidance
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
-                notes = cli.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
+                notes = planning_flow.offer_local_architecture_note_interactive(registry, repository_dir, "Add background jobs.", ["content"])
             finally:
                 builtins.input = original_input
-                cli.suggest_architecture_coverage_gap = original
+                planning_flow.suggest_architecture_coverage_gap = original
             self.assertEqual([".esc-ai/local-architecture/background-jobs.md"], notes)
             text = (repository_dir / notes[0]).read_text(encoding="utf-8")
             self.assertIn("status: stub", text)
@@ -1328,8 +1331,8 @@ class PlanningInteractiveTests(unittest.TestCase):
             run(["repository", "answer", "repo", str(answers_file)])
             run(["repository", "apply", "repo"])
 
-            original = cli.offer_local_architecture_note_interactive
-            cli.offer_local_architecture_note_interactive = lambda registry, repository_path, objective, components: [
+            original = planning_flow.offer_local_architecture_note_interactive
+            planning_flow.offer_local_architecture_note_interactive = lambda registry, repository_path, objective, components: [
                 ".esc-ai/local-architecture/background-jobs.md"
             ]
             responses = iter([
@@ -1344,7 +1347,7 @@ class PlanningInteractiveTests(unittest.TestCase):
                     code = cli.run_planning_interactive(store, registry)
             finally:
                 builtins.input = original_input
-                cli.offer_local_architecture_note_interactive = original
+                planning_flow.offer_local_architecture_note_interactive = original
 
             self.assertEqual(0, code)
             task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-jobs"
@@ -1407,8 +1410,8 @@ class PlanningInteractiveTests(unittest.TestCase):
             self._onboard(root, registry, repository_dir)
             set_provider(registry, "claude", "subscription")
 
-            original_drift = cli.suggest_work_type_drift
-            cli.suggest_work_type_drift = lambda client, repository_path, work_type, objective, scope_boundary, completion_conditions: {
+            original_drift = planning_flow.suggest_work_type_drift
+            planning_flow.suggest_work_type_drift = lambda client, repository_path, work_type, objective, scope_boundary, completion_conditions: {
                 "drifted": True, "suggested_work_type": "feature",
                 "reasoning": "This adds a new password-reset flow, not just a correction.",
             }
@@ -1428,7 +1431,7 @@ class PlanningInteractiveTests(unittest.TestCase):
                     code = cli.run_planning_interactive(store, registry)
             finally:
                 builtins.input = original_input
-                cli.suggest_work_type_drift = original_drift
+                planning_flow.suggest_work_type_drift = original_drift
 
             self.assertEqual(0, code)
             output = buffer.getvalue()
@@ -1447,8 +1450,8 @@ class PlanningInteractiveTests(unittest.TestCase):
             self._onboard(root, registry, repository_dir)
             set_provider(registry, "claude", "subscription")
 
-            original_drift = cli.suggest_work_type_drift
-            cli.suggest_work_type_drift = lambda client, repository_path, work_type, objective, scope_boundary, completion_conditions: {
+            original_drift = planning_flow.suggest_work_type_drift
+            planning_flow.suggest_work_type_drift = lambda client, repository_path, work_type, objective, scope_boundary, completion_conditions: {
                 "drifted": True, "suggested_work_type": "feature", "reasoning": "Looks like new behavior.",
             }
 
@@ -1467,7 +1470,7 @@ class PlanningInteractiveTests(unittest.TestCase):
                     code = cli.run_planning_interactive(store, registry)
             finally:
                 builtins.input = original_input
-                cli.suggest_work_type_drift = original_drift
+                planning_flow.suggest_work_type_drift = original_drift
 
             self.assertEqual(0, code)
             task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "login-fix"
@@ -1483,8 +1486,8 @@ class PlanningInteractiveTests(unittest.TestCase):
             self._onboard(root, registry, repository_dir)
             set_provider(registry, "claude", "subscription")
 
-            original_drift = cli.suggest_work_type_drift
-            cli.suggest_work_type_drift = lambda client, repository_path, work_type, objective, scope_boundary, completion_conditions: {
+            original_drift = planning_flow.suggest_work_type_drift
+            planning_flow.suggest_work_type_drift = lambda client, repository_path, work_type, objective, scope_boundary, completion_conditions: {
                 "drifted": False, "suggested_work_type": None, "reasoning": None,
             }
 
@@ -1502,7 +1505,7 @@ class PlanningInteractiveTests(unittest.TestCase):
                     code = cli.run_planning_interactive(store, registry)
             finally:
                 builtins.input = original_input
-                cli.suggest_work_type_drift = original_drift
+                planning_flow.suggest_work_type_drift = original_drift
 
             self.assertEqual(0, code)
             self.assertNotIn("grown from", buffer.getvalue())
@@ -1551,8 +1554,8 @@ class PlanningInteractiveTests(unittest.TestCase):
             self._onboard(root, registry, repository_dir)
             set_provider(registry, "claude", "subscription")
 
-            original = cli.run_form_driven_planning_conversation_interactive
-            cli.run_form_driven_planning_conversation_interactive = lambda registry, repository_path, objective: {
+            original = planning_flow.run_form_driven_planning_conversation_interactive
+            planning_flow.run_form_driven_planning_conversation_interactive = lambda registry, repository_path, objective: {
                 "work_type": "feature",
                 "objective": "Add background job scheduling.",
                 "components": ["content"],
@@ -1574,7 +1577,7 @@ class PlanningInteractiveTests(unittest.TestCase):
                     code = cli.run_planning_interactive(store, registry)
             finally:
                 builtins.input = original_input
-                cli.run_form_driven_planning_conversation_interactive = original
+                planning_flow.run_form_driven_planning_conversation_interactive = original
 
             self.assertEqual(0, code)
             task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-jobs"
@@ -1594,8 +1597,8 @@ class PlanningInteractiveTests(unittest.TestCase):
             self._onboard(root, registry, repository_dir)
             set_provider(registry, "claude", "subscription")
 
-            original = cli.run_form_driven_planning_conversation_interactive
-            cli.run_form_driven_planning_conversation_interactive = lambda registry, repository_path, objective: {
+            original = planning_flow.run_form_driven_planning_conversation_interactive
+            planning_flow.run_form_driven_planning_conversation_interactive = lambda registry, repository_path, objective: {
                 "work_type": "feature",
                 "objective": "Add background job scheduling.",
                 # components/scope_boundary/completion_conditions/rollout_needs never captured
@@ -1614,7 +1617,7 @@ class PlanningInteractiveTests(unittest.TestCase):
                     code = cli.run_planning_interactive(store, registry)
             finally:
                 builtins.input = original_input
-                cli.run_form_driven_planning_conversation_interactive = original
+                planning_flow.run_form_driven_planning_conversation_interactive = original
 
             self.assertEqual(0, code)
             task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-jobs"
@@ -1631,8 +1634,8 @@ class PlanningInteractiveTests(unittest.TestCase):
             self._onboard(root, registry, repository_dir)
             set_provider(registry, "claude", "subscription")
 
-            original = cli.run_form_driven_planning_conversation_interactive
-            cli.run_form_driven_planning_conversation_interactive = lambda registry, repository_path, objective: None
+            original = planning_flow.run_form_driven_planning_conversation_interactive
+            planning_flow.run_form_driven_planning_conversation_interactive = lambda registry, repository_path, objective: None
 
             responses = iter([
                 "repo", "Add jobs.", "feature-jobs", str(len(cli.WORK_TYPES) + 1),  # "chat about it"
@@ -1649,7 +1652,7 @@ class PlanningInteractiveTests(unittest.TestCase):
                     code = cli.run_planning_interactive(store, registry)
             finally:
                 builtins.input = original_input
-                cli.run_form_driven_planning_conversation_interactive = original
+                planning_flow.run_form_driven_planning_conversation_interactive = original
 
             self.assertEqual(0, code)
             task_dir = repository_dir / ".esc-ai" / "workflows" / "active" / "feature-jobs"
@@ -1665,7 +1668,7 @@ class RunFormDrivenPlanningConversationInteractiveTests(unittest.TestCase):
             _make_gradle_repository(repository_dir)
             buffer = io.StringIO()
             with redirect_stdout(buffer):
-                form = cli.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
+                form = planning_flow.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
         self.assertIsNone(form)
         self.assertIn("pick a work type from the list instead", buffer.getvalue())
 
@@ -1683,8 +1686,8 @@ class RunFormDrivenPlanningConversationInteractiveTests(unittest.TestCase):
             generate_indexes(repository_dir)
             set_provider(registry, "claude", "subscription")
 
-            original = cli.suggest_form_turn
-            cli.suggest_form_turn = lambda client, repository_path, message, objective, suggested_components, resume_session_id=None: {
+            original = conversation_flow.suggest_form_turn
+            conversation_flow.suggest_form_turn = lambda client, repository_path, message, objective, suggested_components, resume_session_id=None: {
                 "reply": "Got it, that's everything.",
                 "form": {
                     "work_type": "feature", "objective": "Add jobs.", "components": ["content"],
@@ -1696,10 +1699,10 @@ class RunFormDrivenPlanningConversationInteractiveTests(unittest.TestCase):
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
-                form = cli.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
+                form = planning_flow.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
             finally:
                 builtins.input = original_input
-                cli.suggest_form_turn = original
+                conversation_flow.suggest_form_turn = original
 
         self.assertEqual("feature", form["work_type"])
         self.assertEqual(["Jobs run"], form["completion_conditions"])
@@ -1718,18 +1721,18 @@ class RunFormDrivenPlanningConversationInteractiveTests(unittest.TestCase):
             generate_indexes(repository_dir)
             set_provider(registry, "claude", "subscription")
 
-            original = cli.suggest_form_turn
-            cli.suggest_form_turn = lambda client, repository_path, message, objective, suggested_components, resume_session_id=None: {
+            original = conversation_flow.suggest_form_turn
+            conversation_flow.suggest_form_turn = lambda client, repository_path, message, objective, suggested_components, resume_session_id=None: {
                 "reply": "What kind of change is this?", "form": {}, "session_id": "ses-1", "threshold": None,
             }
             responses = iter([""])  # blank line -- stop immediately
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
-                form = cli.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
+                form = planning_flow.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
             finally:
                 builtins.input = original_input
-                cli.suggest_form_turn = original
+                conversation_flow.suggest_form_turn = original
 
         self.assertIsNone(form)
 
@@ -1747,16 +1750,16 @@ class RunFormDrivenPlanningConversationInteractiveTests(unittest.TestCase):
             generate_indexes(repository_dir)
             set_provider(registry, "claude", "subscription")
 
-            original = cli.suggest_form_turn
-            cli.suggest_form_turn = lambda client, repository_path, message, objective, suggested_components, resume_session_id=None: {
+            original = conversation_flow.suggest_form_turn
+            conversation_flow.suggest_form_turn = lambda client, repository_path, message, objective, suggested_components, resume_session_id=None: {
                 "reply": "Still talking...", "form": {"work_type": "feature"}, "session_id": "ses-1", "threshold": "hard",
             }
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    form = cli.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
+                    form = planning_flow.run_form_driven_planning_conversation_interactive(registry, repository_dir, "Add jobs.")
             finally:
-                cli.suggest_form_turn = original
+                conversation_flow.suggest_form_turn = original
 
         self.assertEqual({"work_type": "feature"}, form)
         self.assertIn("wrapping up now", buffer.getvalue())
@@ -1865,7 +1868,7 @@ class PlanningConversationInteractiveTests(unittest.TestCase):
             builtins.input = lambda prompt="": next(responses)
             try:
                 buffer = io.StringIO()
-                with redirect_stdout(buffer), patch("esc_orchestrator.escape_ai_cli.ClaudeCodeClient", return_value=fake_client):
+                with redirect_stdout(buffer), patch("esc_orchestrator.entrypoints.cli.interactive.conversation.ClaudeCodeClient", return_value=fake_client):
                     result = cli.run_planning_conversation_interactive(
                         registry, repository_dir, "repo", "init-1", "Add CSV export.",
                     )
@@ -1913,7 +1916,7 @@ class PlanningConversationInteractiveTests(unittest.TestCase):
             builtins.input = lambda prompt="": next(responses)
             try:
                 buffer = io.StringIO()
-                with redirect_stdout(buffer), patch("esc_orchestrator.escape_ai_cli.ClaudeCodeClient", return_value=fake_client):
+                with redirect_stdout(buffer), patch("esc_orchestrator.entrypoints.cli.interactive.conversation.ClaudeCodeClient", return_value=fake_client):
                     cli.run_planning_conversation_interactive(registry, repository_dir, "repo", "init-1", "Add CSV export.")
             finally:
                 builtins.input = original_input
@@ -1946,7 +1949,7 @@ class PlanningConversationInteractiveTests(unittest.TestCase):
             builtins.input = lambda prompt="": next(responses)
             try:
                 buffer = io.StringIO()
-                with redirect_stdout(buffer), patch("esc_orchestrator.escape_ai_cli.ClaudeCodeClient", return_value=fake_client):
+                with redirect_stdout(buffer), patch("esc_orchestrator.entrypoints.cli.interactive.conversation.ClaudeCodeClient", return_value=fake_client):
                     cli.run_planning_conversation_interactive(registry, repository_dir, "repo", "init-1", "Add CSV export.")
             finally:
                 builtins.input = original_input
@@ -3847,8 +3850,8 @@ class ProviderTests(unittest.TestCase):
             original_input = builtins.input
             builtins.input = lambda prompt="": next(responses)
             try:
-                with patch("esc_orchestrator.escape_ai_cli.KNOWN_PROVIDERS", ("acme",)), \
-                     patch("esc_orchestrator.escape_ai_cli.SUBSCRIPTION_CAPABLE_PROVIDERS", ()), \
+                with patch("esc_orchestrator.entrypoints.cli.interactive.configure.KNOWN_PROVIDERS", ("acme",)), \
+                     patch("esc_orchestrator.entrypoints.cli.interactive.configure.SUBSCRIPTION_CAPABLE_PROVIDERS", ()), \
                      patch("esc_exec.registry.KNOWN_PROVIDERS", ("acme",)):
                     provider = cli.prompt_provider_setup_interactive(registry)
             finally:
@@ -3884,21 +3887,21 @@ class ProviderTests(unittest.TestCase):
     def test_suggest_answers_via_provider_skips_with_no_provider_connected(self):
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
-            self.assertEqual({}, cli.suggest_answers_via_provider(registry, Path(temp), ["content"], []))
+            self.assertEqual({}, onboarding_flow.suggest_answers_via_provider(registry, Path(temp), ["content"], []))
 
     def test_suggest_answers_via_provider_skips_for_api_key_route(self):
         from esc_exec.registry import set_provider
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
             set_provider(registry, "claude", "api-key")
-            self.assertEqual({}, cli.suggest_answers_via_provider(registry, Path(temp), ["content"], []))
+            self.assertEqual({}, onboarding_flow.suggest_answers_via_provider(registry, Path(temp), ["content"], []))
 
     def test_suggest_answers_via_provider_skips_for_non_claude_provider(self):
         from esc_exec.registry import set_provider
         with TemporaryDirectory() as temp:
             registry = Path(temp) / "registry.yaml"
             set_provider(registry, "openai", "api-key")
-            self.assertEqual({}, cli.suggest_answers_via_provider(registry, Path(temp), ["content"], []))
+            self.assertEqual({}, onboarding_flow.suggest_answers_via_provider(registry, Path(temp), ["content"], []))
 
     def test_suggest_answers_via_provider_calls_through_for_claude_subscription(self):
         from esc_exec.registry import set_provider
@@ -3911,16 +3914,16 @@ class ProviderTests(unittest.TestCase):
             finally:
                 providers.claude_cli_available = original_available
 
-            original_suggest = cli.suggest_onboarding_answers
+            original_suggest = onboarding_flow.suggest_onboarding_answers
             calls = []
             def fake_suggest_onboarding_answers(client, repository_path, purpose_ids, frameworks_ids):
                 calls.append((repository_path, purpose_ids, frameworks_ids))
                 return {"content": {"purpose": "Owns lesson publishing."}}
-            cli.suggest_onboarding_answers = fake_suggest_onboarding_answers
+            onboarding_flow.suggest_onboarding_answers = fake_suggest_onboarding_answers
             try:
-                result = cli.suggest_answers_via_provider(registry, Path(temp), ["content"], ["content"])
+                result = onboarding_flow.suggest_answers_via_provider(registry, Path(temp), ["content"], ["content"])
             finally:
-                cli.suggest_onboarding_answers = original_suggest
+                onboarding_flow.suggest_onboarding_answers = original_suggest
             self.assertEqual({"content": {"purpose": "Owns lesson publishing."}}, result)
             self.assertEqual([(Path(temp), ["content"], ["content"])], calls)
 
@@ -3935,14 +3938,14 @@ class ProviderTests(unittest.TestCase):
             finally:
                 providers.claude_cli_available = original_available
 
-            original_suggest = cli.suggest_onboarding_answers
+            original_suggest = onboarding_flow.suggest_onboarding_answers
             def raising_suggest_onboarding_answers(client, repository_path, purpose_ids, frameworks_ids):
                 raise cli.ClaudeCodeError("boom")
-            cli.suggest_onboarding_answers = raising_suggest_onboarding_answers
+            onboarding_flow.suggest_onboarding_answers = raising_suggest_onboarding_answers
             try:
-                result = cli.suggest_answers_via_provider(registry, Path(temp), ["content"], [])
+                result = onboarding_flow.suggest_answers_via_provider(registry, Path(temp), ["content"], [])
             finally:
-                cli.suggest_onboarding_answers = original_suggest
+                onboarding_flow.suggest_onboarding_answers = original_suggest
             self.assertEqual({}, result)
 
 
