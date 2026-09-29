@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 from esc_exec.manifests import overall_exit_code
 from esc_exec.registry import (
@@ -11,7 +10,7 @@ from esc_exec.registry import (
     default_policy_id,
     set_default_policy,
 )
-from esc_orchestrator.application.ports import StateStore
+from esc_orchestrator.application.app import App
 from esc_orchestrator.application.providers import connect_provider
 from esc_orchestrator.application.repositories import (
     analyze,
@@ -40,7 +39,8 @@ _SCAFFOLD_NEXT_STEP = "Then run: escape-ai repository add <id> <path> && escape-
 
 
 @guarded
-def _dispatch_repository(args: argparse.Namespace, store: StateStore, registry: Path) -> int:
+def _dispatch_repository(args: argparse.Namespace, app: App) -> int:
+    store, registry = app.store, app.registry
     if args.repository_command == "add":
         add_route(registry, "repositories", args.id, args.path)
         print(f"REGISTERED repository `{args.id}` -> {args.path.expanduser().resolve()}")
@@ -88,14 +88,16 @@ def _dispatch_repository(args: argparse.Namespace, store: StateStore, registry: 
 
 
 @guarded
-def _dispatch_resume(args: argparse.Namespace, store: StateStore, registry: Path) -> int:
+def _dispatch_resume(args: argparse.Namespace, app: App) -> int:
+    store, registry = app.store, app.registry
     items = active_work(store, registry)
     print(json.dumps(items, indent=2) if args.json else render_active_work(items))
     return EXIT_OK
 
 
 @guarded
-def _dispatch_provider(args: argparse.Namespace, store: StateStore, registry: Path) -> int:
+def _dispatch_provider(args: argparse.Namespace, app: App) -> int:
+    registry = app.registry
     if args.provider_command == "auth":
         route = args.route or ("subscription" if args.name in SUBSCRIPTION_CAPABLE_PROVIDERS else "api-key")
         connect_provider(registry, args.name, route)
@@ -108,7 +110,8 @@ def _dispatch_provider(args: argparse.Namespace, store: StateStore, registry: Pa
 
 
 @guarded
-def _dispatch_policy(args: argparse.Namespace, store: StateStore, registry: Path) -> int:
+def _dispatch_policy(args: argparse.Namespace, app: App) -> int:
+    registry = app.registry
     if args.policy_command == "show":
         print(render_policy_status(default_policy_id(registry)))
         return EXIT_OK
@@ -120,7 +123,8 @@ def _dispatch_policy(args: argparse.Namespace, store: StateStore, registry: Path
 
 
 @guarded
-def _dispatch_roadmap(args: argparse.Namespace, store: StateStore, registry: Path) -> int:
+def _dispatch_roadmap(args: argparse.Namespace, app: App) -> int:
+    registry = app.registry
     if args.roadmap_command == "show":
         print(render_roadmap(show_roadmap(registry, args.repository)))
         return EXIT_OK

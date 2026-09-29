@@ -23,7 +23,10 @@ def translates_engine_errors(function: F) -> F:
             return function(*args, **kwargs)
         except AppError:
             raise
-        except (KeyError, FileNotFoundError) as exc:
+        except KeyError as exc:
+            # str(KeyError("msg")) is the repr, "'msg'" -- use the message itself.
+            raise NotFoundError(str(exc.args[0]) if exc.args else "not found") from exc
+        except FileNotFoundError as exc:
             raise NotFoundError(str(exc)) from exc
         except (ValueError, OSError) as exc:
             raise InvalidInputError(str(exc)) from exc

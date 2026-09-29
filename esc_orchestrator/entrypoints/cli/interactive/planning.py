@@ -18,6 +18,7 @@ from esc_exec.planning import (
     load_repository_index,
 )
 from esc_exec.registry import active_provider, resolve_route
+from esc_orchestrator.application.app import App
 from esc_orchestrator.application.planning import apply_plan, draft_plan
 from esc_orchestrator.application.repositories import resolve_repository
 from esc_orchestrator.domain.errors import AppError
@@ -34,7 +35,6 @@ from esc_orchestrator.entrypoints.cli.render import (
     render_work_types,
 )
 from esc_orchestrator.entrypoints.cli.terminal import ask, confirm, select_menu
-from esc_orchestrator.store import Store
 
 
 def confirm_work_type_drift_interactive(
@@ -129,7 +129,7 @@ def offer_local_architecture_note_interactive(
     return [str(note_path.relative_to(repository_path))]
 
 
-def run_planning_interactive(store: Store, registry: Path, prefilled_repository_id: str | None = None) -> int:
+def run_planning_interactive(app: App, prefilled_repository_id: str | None = None) -> int:
     """
     prefilled_repository_id skips the "Repositories:" question entirely --
     used when arriving here straight from a just-finished onboarding (see
@@ -145,6 +145,7 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
     itself never actually uses work_type for routing/question-generation (only
     validates and stores it), so this reordering needed no changes there.
     """
+    store, registry = app.store, app.registry
     try:
         if prefilled_repository_id:
             repository_values = [prefilled_repository_id]

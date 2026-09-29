@@ -11,6 +11,8 @@ from esc_exec.conversation import (
     suggest_unresolved_components,
 )
 from esc_exec.registry import active_provider
+from esc_orchestrator.application.app import App
+from esc_orchestrator.application.ports import StateStore
 from esc_orchestrator.application.repositories import (
     analyze,
     apply_answers,
@@ -36,7 +38,6 @@ from esc_orchestrator.entrypoints.cli.terminal import (
     select_menu,
 )
 from esc_orchestrator.scaffold_wizards import render_wizard_suggestion
-from esc_orchestrator.store import Store
 
 
 def suggest_answers_via_provider(
@@ -132,7 +133,7 @@ def _collect_answer(question: dict[str, Any], answers: dict[str, dict[str, Any]]
     bucket[field] = ask(">").strip()
 
 
-def _unfinished_onboarding_label(store: Store, registry: Path, repository_id: str) -> str:
+def _unfinished_onboarding_label(store: StateStore, registry: Path, repository_id: str) -> str:
     """
     Deliberately short -- kept to just the repository ID and pending-question count,
     not the full absolute path (shown again once picked, via render_proposal). A live
@@ -188,7 +189,8 @@ def confirm_components_interactive(components: list[dict[str, str]]) -> set[str]
     return {components[index]["id"] for index in excluded_indices}
 
 
-def run_onboarding_interactive(store: Store, registry: Path) -> int:
+def run_onboarding_interactive(app: App) -> int:
+    store, registry = app.store, app.registry
     unfinished = store.list_unfinished_onboardings()
     raw: str | None = None
     if unfinished:
@@ -323,6 +325,6 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
     except (EOFError, KeyboardInterrupt):
         return 0
     if not choice:
-        return run_planning_interactive(store, registry, prefilled_repository_id=repository_id)
+        return run_planning_interactive(app, prefilled_repository_id=repository_id)
     return 0
 

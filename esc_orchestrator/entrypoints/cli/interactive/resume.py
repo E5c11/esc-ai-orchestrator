@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from esc_exec.registry import active_provider
 from esc_exec.yaml_io import load_yaml
+from esc_orchestrator.application.app import App
 from esc_orchestrator.application.doctor import doctor_check
 from esc_orchestrator.application.providers import resolve_default_policy
 from esc_orchestrator.application.repositories import resolve_repository
 from esc_orchestrator.application.runs import (
     active_work,
     checkpoint_candidate,
-    execute_task,
     prior_consent,
     promote_checkpoint,
     run_detail,
@@ -30,7 +29,6 @@ from esc_orchestrator.entrypoints.cli.render import (
     render_run_detail,
 )
 from esc_orchestrator.entrypoints.cli.terminal import confirm, select_menu
-from esc_orchestrator.store import Store
 
 
 def _resume_item_label(item: dict[str, Any]) -> str:
@@ -39,12 +37,13 @@ def _resume_item_label(item: dict[str, Any]) -> str:
     return f"{item['repository_id']}/{item['task_id']} -- {status}, {item['attempts']} attempt(s){checkpoint} -- {item['objective']}"
 
 
-def run_observe_interactive(store: Store, registry: Path) -> int:
+def run_observe_interactive(app: App) -> int:
     """
     "Observe a run" -- a task picker (reusing `active_work`, same as "Resume active
     work") followed by a read-only drill-down over that task's latest recorded run
     (see `run_detail`'s docstring for why this is a post-hoc view, not a live tail).
     """
+    store, registry = app.store, app.registry
     items = active_work(store, registry)
     if not items:
         print(render_active_work(items))
@@ -60,7 +59,8 @@ def run_observe_interactive(store: Store, registry: Path) -> int:
     return 0
 
 
-def run_resume_interactive(store: Store, registry: Path) -> int:
+def run_resume_interactive(app: App) -> int:
+    store, registry = app.store, app.registry
     items = active_work(store, registry)
     if not items:
         print(render_active_work(items))
@@ -107,7 +107,7 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
         if not confirm("Execute this task now?"):
             print("Cancelled -- nothing was executed.")
             return 0
-        result = execute_task(store, registry, repository_id, repository_path, task_id, provider)
+        result = app.execute_task(repository_id, repository_path, task_id, provider)
         print(render_execution_result(result))
         return 0
 

@@ -10,18 +10,16 @@ from esc_exec.worktree import diff_summary, merge_worktree
 from esc_exec.yaml_io import load_yaml
 from esc_orchestrator.application.doctor import doctor_check
 from esc_orchestrator.application.errors import translates_engine_errors
-from esc_orchestrator.application.ports import StateStore
+from esc_orchestrator.application.ports import RuntimeFactory, SchedulerFactory, StateStore
 from esc_orchestrator.application.providers import (
     DEFAULT_OPENCODE_SERVER,
     default_adapter,
     default_workspace,
     resolve_default_policy,
-    resolve_runtime,
 )
 from esc_orchestrator.application.repositories import resolve_repository
 from esc_orchestrator.domain.errors import IncompleteError, NotFoundError
 from esc_orchestrator.initiative import analyze_task_impact
-from esc_orchestrator.scheduler import Scheduler
 
 
 @translates_engine_errors
@@ -136,10 +134,12 @@ def _task_id_suggestions(repository_path: Path, task_id: str) -> list[str]:
 def execute_task(
     store: StateStore, registry: Path, repository_id: str, repository_path: Path, task_id: str, provider: dict[str, Any],
     runtime: Any = None, opencode_server: str = DEFAULT_OPENCODE_SERVER,
+    *, scheduler_factory: SchedulerFactory, runtime_factory: RuntimeFactory,
 ) -> dict[str, Any]:
     """
     Connects an approved, already-written task.yaml to real execution via the same
-    Scheduler/Store the HTTP daemon uses -- submit, wait for the background worker to
+    Scheduler/Store the HTTP daemon uses (built by the injected `scheduler_factory` / `runtime_factory`,
+    never constructed here) -- submit, wait for the background worker to
     finish (queue.join()), then close. A CLI invocation is inherently one task at a
     time, so this reuses Scheduler's exact submit/execute/update_run sequence
     without needing a long-lived daemon around it.
@@ -155,7 +155,7 @@ def execute_task(
         "policy": resolve_default_policy(registry),
     }
     attempt = store.record_attempt(task_id)
-    scheduler = Scheduler(store, runtime or resolve_runtime(provider, registry, opencode_server), registry)
+    scheduler = scheduler_factory(store, runtime or runtime_factory(provider, registry, opencode_server), registry)
     try:
         _, run_id = scheduler.submit(contracts)
         scheduler.queue.join()

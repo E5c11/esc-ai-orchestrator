@@ -13,7 +13,6 @@ from esc_orchestrator.domain.policy_profiles import (
     DEFAULT_POLICY_PROFILE_ID,
     POLICY_PROFILES,
 )
-from esc_orchestrator.runtime import ClaudeCodeRuntime, CodexRuntime, OpenCodeRuntime
 
 DEFAULT_OPENCODE_SERVER = "http://127.0.0.1:4097"
 
@@ -95,14 +94,6 @@ def default_adapter(provider: dict[str, Any]) -> dict[str, Any]:
             "capabilities": ["sessions", "events", "tools", "permissions"],
         },
     }
-
-
-def resolve_runtime(provider: dict[str, Any], registry: Path, opencode_server: str) -> Any:
-    if provider["route"] == "subscription" and provider["id"] == "claude":
-        return ClaudeCodeRuntime(registry)
-    if provider["route"] == "subscription" and provider["id"] == "openai":
-        return CodexRuntime(registry)
-    return OpenCodeRuntime(opencode_server, registry)
 
 
 def resolve_default_policy(registry: Path) -> dict[str, Any]:

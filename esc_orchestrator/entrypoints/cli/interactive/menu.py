@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-
+from esc_orchestrator.application.app import App
 from esc_orchestrator.application.repositories import validate_system
 from esc_orchestrator.entrypoints.cli.interactive.configure import (
     run_configure_interactive,
@@ -22,10 +21,9 @@ from esc_orchestrator.entrypoints.cli.render import (
     render_system_validation,
 )
 from esc_orchestrator.entrypoints.cli.terminal import select_menu
-from esc_orchestrator.store import Store
 
 
-def run_interactive(store: Store, registry: Path) -> int:
+def run_interactive(app: App) -> int:
     """
     Loops back to this same menu after every action -- including one that ends
     in an error message (a bad repository path, a failed apply, ...) -- instead
@@ -35,18 +33,19 @@ def run_interactive(store: Store, registry: Path) -> int:
     deliberate exit is backing out of the menu itself (Esc/blank/EOF/Ctrl-C,
     handled by select_menu returning None).
     """
+    registry = app.registry
     while True:
         choice = select_menu(render_menu(), MENU)
         if choice is None:
             return 0
         if choice == 0:
-            run_onboarding_interactive(store, registry)
+            run_onboarding_interactive(app)
         elif choice == 1:
-            run_planning_interactive(store, registry)
+            run_planning_interactive(app)
         elif choice == 2:
-            run_resume_interactive(store, registry)
+            run_resume_interactive(app)
         elif choice == 3:
-            run_observe_interactive(store, registry)
+            run_observe_interactive(app)
         elif choice == 4:
             run_configure_interactive(registry)
         elif choice == 5:

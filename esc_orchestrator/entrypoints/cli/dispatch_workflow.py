@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
 
 from esc_exec.procedures import PROCEDURES
+from esc_orchestrator.application.app import App
 from esc_orchestrator.application.planning import (
     apply_pending_plan,
     draft_intent,
@@ -13,12 +13,10 @@ from esc_orchestrator.application.planning import (
     plan_status,
     store_plan_answers,
 )
-from esc_orchestrator.application.ports import StateStore
 from esc_orchestrator.application.repositories import resolve_repository
 from esc_orchestrator.application.runs import (
     checkpoint_candidate,
     doctor_task,
-    execute_task,
     prepare_task_run,
     promote_checkpoint,
     require_provider,
@@ -41,10 +39,11 @@ from esc_orchestrator.initiative import find_ready_tasks
 
 
 @guarded
-def _dispatch_intent(args: argparse.Namespace, store: StateStore, registry: Path) -> int:
+def _dispatch_intent(args: argparse.Namespace, app: App) -> int:
     """BLA-42 front door: an intent verb drafts an initiative through the same draft_plan the
     `initiative` group and the interactive menu use. It only selects the procedure; every gate lives in
     PROCEDURES and the execution machinery."""
+    store, registry = app.store, app.registry
     verb = args.command
     try:
         initiative_id, draft = draft_intent(store, registry, verb, args.objective, args.repositories, args.initiative_id)
@@ -79,7 +78,8 @@ def _rewrite_legacy_plan_argv(argv: list[str]) -> list[str]:
 
 
 @guarded
-def _dispatch_plan(args: argparse.Namespace, store: StateStore, registry: Path) -> int:
+def _dispatch_plan(args: argparse.Namespace, app: App) -> int:
+    store, registry = app.store, app.registry
     if args.plan_command == "draft":
         request = json.loads(args.request_file.read_text(encoding="utf-8"))
         draft = draft_plan(
@@ -113,7 +113,8 @@ def _dispatch_plan(args: argparse.Namespace, store: StateStore, registry: Path) 
 
 
 @guarded
-def _dispatch_task(args: argparse.Namespace, store: StateStore, registry: Path) -> int:
+def _dispatch_task(args: argparse.Namespace, app: App) -> int:
+    store, registry = app.store, app.registry
     if args.task_command == "run":
         preview = prepare_task_run(store, registry, args.repository, args.task_id)
         print(render_execution_preview(
@@ -123,9 +124,8 @@ def _dispatch_task(args: argparse.Namespace, store: StateStore, registry: Path) 
             print("Preview only -- re-run with --yes to actually execute.")
             return EXIT_OK
         provider = require_provider(preview.provider)
-        result = execute_task(
-            store, registry, preview.repository_id, preview.repository_path, args.task_id, provider,
-            opencode_server=args.opencode,
+        result = app.execute_task(
+            preview.repository_id, preview.repository_path, args.task_id, provider, opencode_server=args.opencode,
         )
         print(render_execution_result(result))
         return EXIT_OK if result["status"] == "succeeded" else EXIT_FAILED

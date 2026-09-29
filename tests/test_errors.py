@@ -100,6 +100,11 @@ class EngineErrorTranslationTests(unittest.TestCase):
                 self._raising(exception)()
             self.assertIs(exception, caught.exception.__cause__)
 
+    def test_a_key_error_message_is_not_wrapped_in_its_repr_quotes(self):
+        with self.assertRaises(NotFoundError) as caught:
+            self._raising(KeyError("Repository route `ghost` is not registered."))()
+        self.assertEqual("Repository route `ghost` is not registered.", str(caught.exception))
+
     def test_bad_values_and_os_errors_become_invalid_input(self):
         for exception in (ValueError("bad"), PermissionError("denied")):
             with self.subTest(exception=type(exception).__name__), self.assertRaises(InvalidInputError):
@@ -118,7 +123,7 @@ class EngineErrorTranslationTests(unittest.TestCase):
 
 class UnexpectedErrorTests(unittest.TestCase):
     def test_a_bug_in_a_handler_exits_with_the_internal_status_and_does_not_look_like_bad_input(self):
-        def boom(args, store, registry):
+        def boom(args, app):
             raise RuntimeError("kaboom")
 
         buffer = io.StringIO()

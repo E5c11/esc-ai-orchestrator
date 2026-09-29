@@ -15,11 +15,19 @@ from esc_exec.roadmap import load_project_roadmap, save_project_roadmap
 from esc_exec.yaml_io import load_yaml, write_yaml
 from esc_orchestrator import escape_ai_cli as cli
 from esc_orchestrator.application import providers
+from esc_orchestrator.application.app import App
+from esc_orchestrator.composition import resolve_runtime
 from esc_orchestrator.domain.errors import InvalidInputError
 from esc_orchestrator.entrypoints.cli.interactive import conversation as conversation_flow
 from esc_orchestrator.entrypoints.cli.interactive import onboarding as onboarding_flow
 from esc_orchestrator.entrypoints.cli.interactive import planning as planning_flow
+from esc_orchestrator.scheduler import Scheduler
 from esc_orchestrator.store import Store
+
+
+def _app(store, registry):
+    """An App wired the way the composition root wires it (real scheduler and runtime factories)."""
+    return App(store=store, registry=registry, scheduler_factory=Scheduler, runtime_factory=resolve_runtime)
 
 
 def _make_gradle_repository(root: Path) -> None:
@@ -649,7 +657,7 @@ class TopLevelMenuLoopTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_interactive(store, registry)
+                    code = cli.run_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -684,7 +692,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -728,7 +736,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -755,7 +763,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -779,7 +787,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -806,7 +814,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
                 onboarding_flow.suggest_answers_via_provider = original_suggest
@@ -835,7 +843,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
                 onboarding_flow.suggest_answers_via_provider = original_suggest
@@ -878,7 +886,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
                 providers.claude_cli_available, providers.claude_auth_status = original_available, original_status
@@ -909,7 +917,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -934,7 +942,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -958,7 +966,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             builtins.input = lambda prompt="": next(first_responses)
             try:
                 with redirect_stdout(io.StringIO()):
-                    cli.run_onboarding_interactive(store, registry)
+                    cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
             self.assertEqual(["repo"], store.list_unfinished_onboardings())
@@ -971,7 +979,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -995,7 +1003,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             builtins.input = lambda prompt="": next(first_responses)
             try:
                 with redirect_stdout(io.StringIO()):
-                    cli.run_onboarding_interactive(store, registry)
+                    cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -1004,7 +1012,7 @@ class InteractiveOnboardingTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -1038,7 +1046,7 @@ class ComponentConfirmationTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -1070,7 +1078,7 @@ class ComponentConfirmationTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -1113,7 +1121,7 @@ class ModuleResolutionInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
                 onboarding_flow.suggest_unresolved_components = original_suggest
@@ -1148,7 +1156,7 @@ class ModuleResolutionInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_onboarding_interactive(store, registry)
+                    code = cli.run_onboarding_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -1299,7 +1307,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_planning_interactive(store, registry)
+                    code = cli.run_planning_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -1344,7 +1352,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_planning_interactive(store, registry)
+                    code = cli.run_planning_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
                 planning_flow.offer_local_architecture_note_interactive = original
@@ -1390,7 +1398,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_planning_interactive(store, registry)
+                    code = cli.run_planning_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -1428,7 +1436,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_planning_interactive(store, registry)
+                    code = cli.run_planning_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
                 planning_flow.suggest_work_type_drift = original_drift
@@ -1467,7 +1475,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_planning_interactive(store, registry)
+                    code = cli.run_planning_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
                 planning_flow.suggest_work_type_drift = original_drift
@@ -1502,7 +1510,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_planning_interactive(store, registry)
+                    code = cli.run_planning_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
                 planning_flow.suggest_work_type_drift = original_drift
@@ -1538,7 +1546,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    cli.run_planning_interactive(store, registry)
+                    cli.run_planning_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
 
@@ -1574,7 +1582,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_planning_interactive(store, registry)
+                    code = cli.run_planning_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
                 planning_flow.run_form_driven_planning_conversation_interactive = original
@@ -1614,7 +1622,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_planning_interactive(store, registry)
+                    code = cli.run_planning_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
                 planning_flow.run_form_driven_planning_conversation_interactive = original
@@ -1649,7 +1657,7 @@ class PlanningInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_planning_interactive(store, registry)
+                    code = cli.run_planning_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
                 planning_flow.run_form_driven_planning_conversation_interactive = original
@@ -2214,8 +2222,7 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             self.assertFalse(items[0]["checkpoint_present"])
 
             # First attempt fails -- a checkpoint candidate should appear.
-            result = cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            result = _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"}, runtime=_FakeFailingRuntime(),
             )
             self.assertEqual(1, result["attempt"])
@@ -2237,8 +2244,7 @@ class ExecutionAndResumptionTests(unittest.TestCase):
 
             # Retry succeeds -- attempt count increments, resume view no longer flags
             # a pending checkpoint (the latest run is no longer a failure).
-            result = cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            result = _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"}, runtime=_FakeSucceedingRuntime(root / "runs"),
             )
             self.assertEqual(2, result["attempt"])
@@ -2293,8 +2299,7 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             code, out = run(["plan", "apply", "feature-export"])
             self.assertEqual(0, code, out)
 
-            result = cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            result = _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"}, runtime=_FakeVerificationFailingRuntime(root / "runs"),
             )
             self.assertEqual("failed", result["status"])
@@ -2358,8 +2363,7 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             code, out = run(["plan", "apply", "feature-export"])
             self.assertEqual(0, code, out)
 
-            result = cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            result = _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"}, runtime=_FakePermissionDenialRuntime(root / "runs"),
             )
             self.assertEqual("waiting-approval", result["status"])
@@ -2453,8 +2457,7 @@ class ExecutionAndResumptionTests(unittest.TestCase):
             self.assertEqual(1, code, out)
             self.assertIn("no such task", out)
 
-            result = cli.execute_task(
-                store, registry, "repo-a", repo_a, "feature-cross-repo-a",
+            result = _app(store, registry).execute_task("repo-a", repo_a, "feature-cross-repo-a",
                 {"id": "claude", "route": "api-key"}, runtime=_FakeSucceedingRuntime(root / "runs"),
             )
             self.assertEqual("succeeded", result["status"])
@@ -2847,8 +2850,7 @@ class WorktreeCheckpointFlowTests(unittest.TestCase):
         """
         with TemporaryDirectory() as temp:
             root, store, registry, repository_dir = self._setup(temp)
-            result = cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            result = _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"},
                 runtime=_FakeWorktreeSucceedingRuntime(root / "runs", repository_dir, leave_a_diff=False),
             )
@@ -2864,8 +2866,7 @@ class WorktreeCheckpointFlowTests(unittest.TestCase):
     def test_succeeded_run_with_a_diff_produces_a_reviewable_candidate(self):
         with TemporaryDirectory() as temp:
             root, store, registry, repository_dir = self._setup(temp)
-            result = cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            result = _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"},
                 runtime=_FakeWorktreeSucceedingRuntime(root / "runs", repository_dir, leave_a_diff=True),
             )
@@ -2880,8 +2881,7 @@ class WorktreeCheckpointFlowTests(unittest.TestCase):
     def test_promoting_a_worktree_only_candidate_merges_and_returns_none(self):
         with TemporaryDirectory() as temp:
             root, store, registry, repository_dir = self._setup(temp)
-            cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"},
                 runtime=_FakeWorktreeSucceedingRuntime(root / "runs", repository_dir, leave_a_diff=True),
             )
@@ -2900,8 +2900,7 @@ class WorktreeCheckpointFlowTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root, store, registry, repository_dir = self._setup(temp)
             db = root / "db.sqlite"
-            cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"},
                 runtime=_FakeWorktreeSucceedingRuntime(root / "runs", repository_dir, leave_a_diff=True),
             )
@@ -2973,8 +2972,7 @@ class PriorConsentTests(unittest.TestCase):
             run(["plan", "answer", "feature-export", str(plan_answers_file)])
             run(["plan", "apply", "feature-export"])
 
-            cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"}, runtime=_FakeSucceedingRuntime(root / "runs"),
             )
             self.assertIsNone(cli.prior_consent(store, "feature-export"))
@@ -3014,8 +3012,7 @@ class PriorConsentTests(unittest.TestCase):
 
             categories = cli.granted_categories(cli.resolve_default_policy(registry))
             self.assertIsNone(cli.prior_consent(store, "feature-export"))
-            cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"},
                 runtime=_FakeConsentRecordingRuntime(root / "runs", categories),
             )
@@ -3394,8 +3391,7 @@ class RunDetailTests(unittest.TestCase):
             _onboard_and_plan_single_repository(db, registry, repository_dir)
             store = Store(db)
 
-            cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"}, runtime=_FakeSucceedingRuntime(root / "runs"),
             )
 
@@ -3419,8 +3415,7 @@ class RunDetailTests(unittest.TestCase):
             _onboard_and_plan_single_repository(db, registry, repository_dir)
             store = Store(db)
 
-            cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"}, runtime=_FakeFailingRuntime(),
             )
 
@@ -3489,7 +3484,7 @@ class ObserveRunInteractiveTests(unittest.TestCase):
             registry = root / "registry.yaml"
             buffer = io.StringIO()
             with redirect_stdout(buffer):
-                code = cli.run_observe_interactive(store, registry)
+                code = cli.run_observe_interactive(_app(store, registry))
             self.assertEqual(0, code)
             self.assertIn("No active work found", buffer.getvalue())
 
@@ -3500,8 +3495,7 @@ class ObserveRunInteractiveTests(unittest.TestCase):
             repository_dir = root / "repo-checkout"
             _onboard_and_plan_single_repository(db, registry, repository_dir)
             store = Store(db)
-            cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"}, runtime=_FakeSucceedingRuntime(root / "runs"),
             )
 
@@ -3510,7 +3504,7 @@ class ObserveRunInteractiveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_observe_interactive(store, registry)
+                    code = cli.run_observe_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
             self.assertEqual(0, code)
@@ -3540,7 +3534,7 @@ class ResumeInteractiveDoctorAndObserveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_resume_interactive(store, registry)
+                    code = cli.run_resume_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
             self.assertEqual(0, code)
@@ -3578,7 +3572,7 @@ class ResumeInteractiveDoctorAndObserveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_resume_interactive(store, registry)
+                    code = cli.run_resume_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
             self.assertEqual(0, code)
@@ -3594,8 +3588,7 @@ class ResumeInteractiveDoctorAndObserveTests(unittest.TestCase):
             repository_dir = root / "repo-checkout"
             _onboard_and_plan_single_repository(db, registry, repository_dir)
             store = Store(db)
-            cli.execute_task(
-                store, registry, "repo", repository_dir, "feature-export",
+            _app(store, registry).execute_task("repo", repository_dir, "feature-export",
                 {"id": "claude", "route": "api-key"}, runtime=_FakeSucceedingRuntime(root / "runs"),
             )
 
@@ -3606,7 +3599,7 @@ class ResumeInteractiveDoctorAndObserveTests(unittest.TestCase):
             try:
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
-                    code = cli.run_resume_interactive(store, registry)
+                    code = cli.run_resume_interactive(_app(store, registry))
             finally:
                 builtins.input = original_input
             self.assertEqual(0, code)

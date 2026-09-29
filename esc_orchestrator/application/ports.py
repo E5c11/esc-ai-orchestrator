@@ -6,6 +6,8 @@ they depend on this structural Protocol instead of the concrete SQLite `Store`
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -29,3 +31,18 @@ class StateStore(Protocol):
     def get_plan_result(self, initiative_id: str) -> dict[str, Any] | None: ...
     def get_task(self, task_id: str) -> dict[str, Any] | None: ...
     def contracts(self, task_id: str) -> dict[str, Any]: ...
+
+
+class SchedulerLike(Protocol):
+    """What `execute_task` needs from a scheduler: submit one task, wait for its worker, then close."""
+
+    queue: Any  # a queue.Queue-like object whose `join()` blocks until submitted work is done
+
+    def submit(self, contracts: dict[str, Any]) -> tuple[str, str]: ...
+    def close(self) -> None: ...
+
+
+# (store, runtime, registry) -> scheduler; supplied by the composition root (ARCH-PY-COMPOSITION).
+SchedulerFactory = Callable[[StateStore, Any, Path], SchedulerLike]
+# (provider, registry, opencode_server) -> runtime; supplied by the composition root.
+RuntimeFactory = Callable[[dict[str, Any], Path, str], Any]

@@ -18,12 +18,12 @@ from esc_exec.registry import (  # noqa: F401
     set_provider,
 )
 from esc_exec.yaml_io import load_yaml  # noqa: F401
+from esc_orchestrator.composition import build_app, resolve_runtime  # noqa: F401
 from esc_orchestrator.application.providers import (  # noqa: F401
     connect_provider,
     default_adapter,
     default_workspace,
     resolve_default_policy,
-    resolve_runtime,
 )
 from esc_orchestrator.application.repositories import (  # noqa: F401
     registered_repository_ids,
@@ -72,7 +72,7 @@ from esc_orchestrator.entrypoints.cli.interactive.resume import (  # noqa: F401
     run_observe_interactive,
     run_resume_interactive,
 )
-from esc_orchestrator.entrypoints.cli.main import main  # noqa: F401
+from esc_orchestrator.entrypoints.cli.main import run
 from esc_orchestrator.entrypoints.cli.parser import build_parser  # noqa: F401
 from esc_orchestrator.entrypoints.cli.render import (  # noqa: F401
     CHAT_ABOUT_IT_OPTION,
@@ -99,6 +99,12 @@ from esc_orchestrator.entrypoints.cli.render import (  # noqa: F401
     render_work_types,
 )
 from esc_orchestrator.entrypoints.cli.terminal import _isatty, select_menu  # noqa: F401
+
+
+def main(argv: list[str] | None = None) -> int:
+    """The `escape-ai` console-script entry point: run the CLI with the real composition root."""
+    return run(argv, build_app)
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
