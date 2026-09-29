@@ -186,6 +186,8 @@ def execute_task(
         "read_only_check": store.output_document(run_id, "read-only-check.json") if read_only else None,
         # A refactor's baseline: how many checks were green before the change (see esc_exec.baseline).
         "baseline": _baseline_for(store, run_id) if work_type == "refactor" else None,
+        # A document run's grounding record: what was checked (see esc_exec.grounding).
+        "grounding": store.output_document(run_id, "grounding-check.json") if work_type == "document" else None,
     }
 
 

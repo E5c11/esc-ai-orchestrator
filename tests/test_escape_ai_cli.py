@@ -575,15 +575,23 @@ class IntentVerbTests(unittest.TestCase):
                 for stage in stages:
                     self.assertIn(stage.name, help_text)
 
-    def test_stages_without_an_implementation_are_marked_not_yet_enforced(self):
-        document = cli.render_procedure("document")
-        self.assertRegex(document, r"grounding_check.*\(not yet enforced\)")
-        self.assertNotRegex(document, r"verify.*not yet enforced")
+    def test_a_stage_with_no_implementation_is_marked_not_yet_enforced(self):
+        """The marker mechanism itself, exercised with a synthetic stage: no real stage is unenforced any more."""
+        from dataclasses import replace
+        from unittest.mock import patch
 
-    def test_the_refactor_procedure_no_longer_claims_baseline_capture_is_unenforced(self):
-        refactor = cli.render_procedure("refactor")
-        self.assertIn("baseline_capture", refactor)
-        self.assertNotIn("not yet enforced", refactor)
+        from esc_exec.procedures import PROCEDURES
+
+        stages = tuple(replace(stage, maps_to="new -- not built yet") if stage.name == "verify" else stage for stage in PROCEDURES["feature"])
+        with patch.dict(PROCEDURES, {"feature": stages}):
+            rendered = cli.render_procedure("feature")
+        self.assertRegex(rendered, r"verify.*\(not yet enforced\)")
+        self.assertNotRegex(rendered, r"route.*not yet enforced")
+
+    def test_every_stage_of_every_procedure_is_now_enforced(self):
+        for verb in cli.INTENT_WORK_TYPES:
+            with self.subTest(verb=verb):
+                self.assertNotIn("not yet enforced", cli.render_procedure(verb))
 
     def test_the_fix_procedure_no_longer_claims_root_cause_is_unenforced(self):
         fix = cli.render_procedure("fix")

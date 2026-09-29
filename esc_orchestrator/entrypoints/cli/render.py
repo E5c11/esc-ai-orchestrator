@@ -264,6 +264,21 @@ _READ_ONLY_NOTE = (
 
 INTENT_NOTES: dict[str, str] = {
     "investigate": _READ_ONLY_NOTE.format(output="Findings -- what the agent established, with evidence (paths, line numbers), and what it could not determine."),
+    "document": (
+        "The grounding_check gate, run after the agent and before verification:\n"
+        "\n"
+        "  - only documentation may change (*.md, *.rst, *.txt, *.adoc, or anything under docs/); a run that\n"
+        "    touches source, tests or build files fails and names them;\n"
+        "  - every file or directory the changed documentation points at must exist: markdown link targets, and\n"
+        "    inline-code paths such as `src/export/Csv.kt:42`. Each broken reference fails the run and is named\n"
+        "    with its document and line. Code blocks, URLs and prose like `read/write` are not treated as paths.\n"
+        "\n"
+        "Input:  what to document, in a sentence, and the repository (-r).\n"
+        "Output: documentation files changed in a disposable worktree for you to review and promote, and a\n"
+        "        report of how many files and references were checked.\n"
+        "Limit:  this proves the references EXIST, not that the prose about them is TRUE. A sentence can cite a\n"
+        "        real file and still be wrong about it: read the diff. Then the ordinary verify gate runs."
+    ),
     "refactor": (
         "The baseline_capture gate: a refactor claims behaviour did not change, and the only evidence is your own\n"
         "checks. So before the agent starts they are run against the untouched code, and the refactor is refused\n"
@@ -464,6 +479,12 @@ def render_execution_result(result: dict[str, Any], worktree_diff: str = "") -> 
         lines += render_root_cause(result["root_cause"])
     if result.get("read_only"):
         lines += render_read_only_result(result)
+    grounding = result.get("grounding")
+    if grounding and result.get("status") in {"succeeded", "succeeded-no-changes"}:
+        lines.append(
+            f"Grounding: {len(grounding['documents'])} documentation file(s), {grounding['references_checked']} "
+            "file reference(s) checked -- all exist (this does not check that the prose is accurate)"
+        )
     baseline = result.get("baseline")
     if baseline and result.get("status") == "succeeded":
         lines.append(

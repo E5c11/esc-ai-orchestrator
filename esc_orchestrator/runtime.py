@@ -10,13 +10,19 @@ from esc_exec.claude_client import ClaudeCodeClient
 from esc_exec.claude_code_adapter import ClaudeCodeAdapter
 from esc_exec.codex_adapter import CodexAdapter, CodexClient
 from esc_exec.environment import check_prerequisites
+from esc_exec.grounding import (
+    count_references,
+    grounding_blockers,
+    is_documentation,
+    non_documentation_changes,
+)
 from esc_exec.json_io import write_json
 from esc_exec.opencode_adapter import OpenCodeAdapter, OpenCodeClient
-from esc_exec.read_only import effective_policy, is_read_only, state_violations
+from esc_exec.read_only import changed_paths, effective_policy, is_read_only, state_violations
 from esc_exec.registry import resolve_route
 from esc_exec.task_context import build_task_context, build_verification_plan
 from esc_exec.verification_execution import execute_verification_plan
-from esc_exec.worktree import repository_state, verification_root
+from esc_exec.worktree import repository_state, verification_root, worktree_changed_paths
 from esc_exec.yaml_io import write_yaml
 from esc_orchestrator.application.doctor import architecture_coverage_blockers
 
@@ -39,6 +45,11 @@ class BaselineError(RunBlockedError):
     """A `refactor` cannot be judged: there is no runnable check, the checkout has uncommitted changes the agent's
     worktree will not contain, or the untouched code already fails its own checks. Raised before the agent is
     dispatched, so nothing is spent on a refactor that could not be shown to preserve behaviour."""
+
+
+class DocumentGroundingError(RunBlockedError):
+    """A `document` run changed something that is not documentation, or wrote documentation that points at files
+    that do not exist. Raised before verification, so the run fails with each problem named."""
 
 
 class ReadOnlyViolationError(RunBlockedError):
@@ -137,10 +148,12 @@ class _AdapterRuntime:
                 if prerequisite_blockers:
                     raise EnvironmentPrerequisiteError(prerequisite_blockers)
             baseline = self._capture_baseline(repository, plan, contracts, root) if work_type == "refactor" else None
-            before = repository_state(repository) if read_only else None
+            before = repository_state(repository) if (read_only or work_type == "document") else None
             run_dir = self.adapter.execute(
                 paths["task"], paths["workspace"], paths["adapter"], paths["policy"]
             )
+            if work_type == "document":
+                self._check_grounding(repository, contracts["task"]["task"]["id"], run_dir, before)
             if read_only:
                 # No verification gates for read-only work (its procedure has no `verify` stage: nothing was
                 # supposed to change, and a test run can itself write build output that would read as a violation).
@@ -165,6 +178,34 @@ class _AdapterRuntime:
                 # Kept with the run as the record of what "behaviour unchanged" meant for this refactor.
                 write_json(run_dir / "baseline-verification-result.json", baseline)
             return run_dir
+
+    @staticmethod
+    def _check_grounding(repository: Path, task_id: str, run_dir: Path, before: dict[str, Any] | None) -> None:
+        """The `grounding_check` stage, between implement and verify: only documentation may have changed, and
+        every file the changed documentation points at must exist in the tree the agent changed. Raises
+        DocumentGroundingError; otherwise records what was checked with the run. Proves references resolve, not
+        that the prose is accurate (esc_exec.grounding)."""
+        root = verification_root(repository, task_id, run_dir)
+        if root != repository:  # the agent edited a worktree: what it changed is the branch's diff
+            changed = sorted(path for path in worktree_changed_paths(repository, task_id) if not path.startswith(_TOOL_OWNED))
+        else:  # it edited the live checkout: what it changed is what differs from before the run
+            changed = changed_paths(before, repository_state(repository))
+        blockers = [f"a document run changed a file that is not documentation: {path}" for path in non_documentation_changes(changed)]
+        documents: dict[str, str] = {}
+        for path in changed:
+            target = root / path
+            if is_documentation(path) and target.is_file():
+                try:
+                    documents[path] = target.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue  # a binary asset under docs/ (an image): nothing to extract references from
+        exists = lambda reference: (root / reference).exists()  # noqa: E731 -- a one-line closure over `root`
+        blockers += grounding_blockers(documents, exists)
+        write_json(run_dir / "grounding-check.json", {
+            "documents": sorted(documents), "references_checked": count_references(documents, exists), "blockers": blockers,
+        })
+        if blockers:
+            raise DocumentGroundingError(blockers)
 
     @staticmethod
     def _capture_baseline(repository: Path, plan: dict[str, Any], contracts: dict[str, Any], root: Path) -> dict[str, Any]:
