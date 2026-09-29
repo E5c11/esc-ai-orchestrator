@@ -5,8 +5,10 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from esc_orchestrator.application.ports import StateStore
+from esc_orchestrator.scheduler import _write_checkpoint_candidate
 from esc_orchestrator.store import Store
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,6 +32,20 @@ class ArchitectureTests(unittest.TestCase):
                     list(inspect.signature(port_method).parameters),
                     list(inspect.signature(getattr(Store, name)).parameters),
                 )
+
+
+class SwallowedErrorTests(unittest.TestCase):
+    """PYERR-SWALLOW-01: a best-effort step may not raise, but it must not vanish silently."""
+
+    def test_failed_checkpoint_candidate_write_is_logged_not_raised(self):
+        class BrokenStore:
+            def contracts(self, task_id):
+                raise RuntimeError("store exploded")
+
+        with TemporaryDirectory() as temp, self.assertLogs("esc_orchestrator.scheduler", level="WARNING") as logs:
+            _write_checkpoint_candidate(BrokenStore(), "t1", "run-1", Path(temp), ["blocked"])
+        self.assertIn("run-1", logs.output[0])
+        self.assertIn("store exploded", logs.output[0])
 
 
 if __name__ == "__main__":

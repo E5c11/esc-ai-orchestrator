@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from esc_exec.procedures import PROCEDURES
 
-
 # BLA-42: the public intent verbs. Each is a front door onto
 # esc_exec.procedures.PROCEDURES[verb]; the value is the esc_exec.planning.WORK_TYPES
 # entry the existing draft_plan/apply_plan/execute_task machinery knows it by, or None
@@ -19,7 +18,8 @@ INTENT_WORK_TYPES: dict[str, str | None] = {
 }
 
 
-assert set(INTENT_WORK_TYPES) == set(PROCEDURES), "INTENT_WORK_TYPES must cover exactly esc_exec.procedures.PROCEDURES"
+if set(INTENT_WORK_TYPES) != set(PROCEDURES):  # an explicit check, not `assert`: `python -O` must not skip it
+    raise RuntimeError("INTENT_WORK_TYPES must cover exactly esc_exec.procedures.PROCEDURES")
 
 
 INTENT_SUMMARIES: dict[str, str] = {

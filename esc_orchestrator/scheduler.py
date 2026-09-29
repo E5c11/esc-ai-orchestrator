@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 from pathlib import Path
@@ -12,6 +13,8 @@ from esc_orchestrator.store import Store
 from esc_exec.checkpoints import checkpoint_document
 from esc_exec.registry import resolve_route
 from esc_exec.yaml_io import load_yaml, write_yaml
+
+logger = logging.getLogger(__name__)
 
 
 class Runtime(Protocol):
@@ -129,7 +132,9 @@ def _write_checkpoint_candidate(
         )
         write_yaml(candidate_dir / "checkpoint.yaml", document)
     except Exception:
-        pass
+        # Best-effort: a checkpoint candidate is a convenience for resuming, and failing to
+        # write one must not mask the run's real failure -- but it must not vanish either.
+        logger.warning("could not write checkpoint candidate for run %s", run_id, exc_info=True)
 
 
 class Scheduler:
@@ -191,7 +196,7 @@ class Scheduler:
                     try:
                         self._advance(task_id)
                     except Exception:
-                        pass
+                        logger.warning("could not advance dependents of task %s", task_id, exc_info=True)
             except Exception as exc:
                 error = str(exc)[:1000]
                 # Any PreDispatchBlockerError (ArchitectureCoverageError,
@@ -208,7 +213,7 @@ class Scheduler:
                     _write_checkpoint_candidate(self.store, task_id, run_id, candidate_dir, blockers)
                     output_path = str(candidate_dir)
                 except Exception:
-                    pass
+                    logger.warning("could not record a checkpoint for failed run %s", run_id, exc_info=True)
                 self.store.update_run(run_id, "failed", output_path=output_path, error=error)
             finally:
                 self.queue.task_done()
