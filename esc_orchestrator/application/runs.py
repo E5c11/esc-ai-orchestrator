@@ -7,7 +7,7 @@ from esc_exec.worktree import merge_worktree
 from esc_exec.registry import read_registry
 from esc_exec.yaml_io import load_yaml
 from esc_orchestrator.scheduler import Scheduler
-from esc_orchestrator.store import Store
+from esc_orchestrator.application.ports import StateStore
 
 from esc_orchestrator.application.providers import (
     DEFAULT_OPENCODE_SERVER,
@@ -18,7 +18,7 @@ from esc_orchestrator.application.providers import (
 )
 
 
-def active_work(store: Store, registry: Path) -> list[dict[str, Any]]:
+def active_work(store: StateStore, registry: Path) -> list[dict[str, Any]]:
     """Read-only: every registered repository's `.esc-ai/workflows/active/*/task.yaml`,
     cross-referenced against this orchestrator's own run/attempt records. No writes."""
     catalog = read_registry(registry)
@@ -53,7 +53,7 @@ def active_work(store: Store, registry: Path) -> list[dict[str, Any]]:
     return items
 
 
-def prior_consent(store: Store, task_id: str) -> dict[str, Any] | None:
+def prior_consent(store: StateStore, task_id: str) -> dict[str, Any] | None:
     """
     The most recent run's recorded `bindings.consent`, if any -- see
     plan/future/pre-flight-consent-and-bounded-autonomy.md layer 1. Only the
@@ -74,7 +74,7 @@ def prior_consent(store: Store, task_id: str) -> dict[str, Any] | None:
     return run_document.get("bindings", {}).get("consent")
 
 
-def run_detail(store: Store, task_id: str) -> dict[str, Any]:
+def run_detail(store: StateStore, task_id: str) -> dict[str, Any]:
     """
     "Observe a run" -- a read-only drill-down over a task's latest recorded run,
     for the "Observe a run" menu item. Every value read here already exists in
@@ -124,7 +124,7 @@ def _task_id_suggestions(repository_path: Path, task_id: str) -> list[str]:
 
 
 def execute_task(
-    store: Store, registry: Path, repository_id: str, repository_path: Path, task_id: str, provider: dict[str, Any],
+    store: StateStore, registry: Path, repository_id: str, repository_path: Path, task_id: str, provider: dict[str, Any],
     runtime: Any = None, opencode_server: str = DEFAULT_OPENCODE_SERVER,
 ) -> dict[str, Any]:
     """
@@ -162,7 +162,7 @@ def execute_task(
     }
 
 
-def checkpoint_candidate(store: Store, repository_path: Path, task_id: str) -> dict[str, Any]:
+def checkpoint_candidate(store: StateStore, repository_path: Path, task_id: str) -> dict[str, Any]:
     """
     A failed run's real checkpoint.yaml is the usual candidate. A *succeeded*
     run has no checkpoint.yaml at all (that file is only ever written on the

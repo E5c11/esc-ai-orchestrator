@@ -9,12 +9,12 @@ from esc_exec.planning import (
     planning_questions,
     route_objective,
 )
-from esc_orchestrator.store import Store
+from esc_orchestrator.application.ports import StateStore
 
 from esc_orchestrator.application.repositories import resolve_repository
 
 
-def draft_plan(store: Store, registry: Path, initiative_id: str, work_type: str, objective: str, repository_values: list[str]) -> dict[str, Any]:
+def draft_plan(store: StateStore, registry: Path, initiative_id: str, work_type: str, objective: str, repository_values: list[str]) -> dict[str, Any]:
     if work_type not in WORK_TYPES:
         raise ValueError(f"work_type must be one of: {', '.join(WORK_TYPES)}")
     repositories: list[str] = []
@@ -38,7 +38,7 @@ def draft_plan(store: Store, registry: Path, initiative_id: str, work_type: str,
 
 
 def apply_plan(
-    store: Store, registry: Path, initiative_id: str, answers: dict[str, Any],
+    store: StateStore, registry: Path, initiative_id: str, answers: dict[str, Any],
     local_architecture_notes_by_repo: dict[str, list[str]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, list[str]] | None]:
     """

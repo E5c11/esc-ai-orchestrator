@@ -1,0 +1,48 @@
+[importlinter]
+root_packages =
+    esc_orchestrator
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Clean layers (entrypoints > application > domain)
+type = layers
+layers =
+    esc_orchestrator.entrypoints
+    esc_orchestrator.application
+    esc_orchestrator.domain
+
+[importlinter:contract:pure-domain]
+name = Domain performs no I/O and uses no framework
+type = forbidden
+source_modules = esc_orchestrator.domain
+forbidden_modules =
+    sqlite3
+    subprocess
+    socket
+    http
+    urllib
+    requests
+    httpx
+    pydantic
+
+[importlinter:contract:application-not-infrastructure]
+name = Application and domain do not import infrastructure directly
+type = forbidden
+source_modules =
+    esc_orchestrator.application
+    esc_orchestrator.domain
+forbidden_modules =
+    esc_orchestrator.store
+    esc_orchestrator.runtime
+    esc_orchestrator.scheduler
+# Two remaining, deliberate exceptions (PYIL-NOBYPASS-01: exact import + reason). Both are
+# *construction* of infrastructure inside the application layer, i.e. composition-root work,
+# not a type dependency: `execute_task` builds the Scheduler and `resolve_runtime` builds a
+# provider runtime. Removing them means passing an app/composition object into the handlers
+# (every `_dispatch_*` and interactive flow) instead of (store, registry) -- a signature change
+# beyond a behavior-preserving split. Tracked as the follow-up in
+# plan/active/python-architecture-profile.md ("Findings from applying the profile"). The contract
+# still blocks any NEW application -> infrastructure import.
+ignore_imports =
+    esc_orchestrator.application.providers -> esc_orchestrator.runtime
+    esc_orchestrator.application.runs -> esc_orchestrator.scheduler

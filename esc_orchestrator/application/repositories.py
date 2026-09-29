@@ -10,7 +10,7 @@ from esc_exec.measurement import process_metrics
 from esc_exec.model import ValidationResult
 from esc_exec.onboarding import analyze_repository, apply_onboarding_answers
 from esc_exec.registry import add_route, read_registry, resolve_route
-from esc_orchestrator.store import Store
+from esc_orchestrator.application.ports import StateStore
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ def resolve_repository(value: str, registry: Path) -> tuple[str, Path]:
 
 
 def analyze(
-    store: Store, registry: Path, repository_id: str, repository_path: Path,
+    store: StateStore, registry: Path, repository_id: str, repository_path: Path,
     extra_resolved_components: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     proposal = analyze_repository(repository_path, registry, extra_resolved_components)
@@ -43,7 +43,7 @@ def analyze(
 
 
 def apply_answers(
-    store: Store, registry: Path, repository_id: str, repository_path: Path, answers: dict[str, Any],
+    store: StateStore, registry: Path, repository_id: str, repository_path: Path, answers: dict[str, Any],
     resolved_components: dict[str, str] | None = None, excluded_component_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     record = store.get_onboarding_proposal(repository_id)
@@ -56,7 +56,7 @@ def apply_answers(
     return result
 
 
-def onboarding_process_metrics(store: Store, repository_id: str) -> dict[str, Any] | None:
+def onboarding_process_metrics(store: StateStore, repository_id: str) -> dict[str, Any] | None:
     """None until both a proposal and applied answers exist -- there is no elapsed
     time to report for an in-progress or never-started onboarding."""
     proposal_record = store.get_onboarding_proposal(repository_id)
@@ -71,7 +71,7 @@ def onboarding_process_metrics(store: Store, repository_id: str) -> dict[str, An
     )
 
 
-def planning_process_metrics(store: Store, initiative_id: str) -> dict[str, Any] | None:
+def planning_process_metrics(store: StateStore, initiative_id: str) -> dict[str, Any] | None:
     draft_record = store.get_plan_draft(initiative_id)
     result_record = store.get_plan_result(initiative_id)
     if draft_record is None or result_record is None:
@@ -83,7 +83,7 @@ def planning_process_metrics(store: Store, initiative_id: str) -> dict[str, Any]
     )
 
 
-def repository_status(store: Store, registry: Path, repository_id: str) -> dict[str, Any]:
+def repository_status(store: StateStore, registry: Path, repository_id: str) -> dict[str, Any]:
     proposal_record = store.get_onboarding_proposal(repository_id)
     pending_record = store.get_pending_answers(repository_id)
     answers_record = store.get_onboarding_answers(repository_id)
