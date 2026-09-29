@@ -68,10 +68,10 @@ procedure with no real gates behind it is cosmetic".
 
 ## Outcome
 
-Engine (branch `feat/bla-44-workflows`): `7a24cd6` work types + read-only primitives, `9db398b`-era fix aside,
-the verification-tree fix, `baseline_capture`, `grounding_check`. Orchestrator (same branch name): runtime
-enforcement, verification-tree fix, refactor, document. 641 engine tests, 330 orchestrator tests; 3 + 4 import
-contracts kept. **No stage of any procedure is "(not yet enforced)" any more** (a test asserts it; the marker
+Both repos, branch `feat/bla-44-workflows`. Engine: `7a24cd6` work types + read-only primitives, `67ce3b7`
+verification-tree fix, `30991e7` + `6c334a0` `baseline_capture`, `b14e8c2` `grounding_check`. Orchestrator: `dca095a`
+read-only enforcement, `be61e9d` verification-tree fix, `abb0801` refactor, `68ad7c0` document. 641 engine tests and
+330 orchestrator tests pass; 3 + 4 import contracts kept. **No stage of any procedure is "(not yet enforced)" any more** (a test asserts it; the marker
 mechanism is kept and tested with a synthetic stage).
 
 | Verb | What is now enforced |
