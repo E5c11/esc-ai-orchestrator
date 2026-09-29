@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import shutil
 import sys
 
 from esc_orchestrator.entrypoints.cli.render import render_menu_options
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Interactive wizard -- thin glue between prompts and the operations above.
@@ -12,7 +15,7 @@ from esc_orchestrator.entrypoints.cli.render import render_menu_options
 def _isatty() -> bool:
     try:
         return sys.stdin.isatty() and sys.stdout.isatty()
-    except Exception:
+    except (ValueError, OSError):  # stdin/stdout closed or without a file descriptor: not a terminal
         return False
 
 
@@ -77,8 +80,9 @@ def select_menu(title: str, options: list[str]) -> int | None:
     if _isatty():
         try:
             return _select_menu_inline(title, options)
-        except Exception:
-            pass  # any failure (unsupported terminal, no termios, etc.) falls through
+        except Exception:  # noqa: BLE001 -- optional UI enhancement: any failure falls back to the plain menu
+            # (unsupported terminal, no termios, etc.); logged so a real bug here is still discoverable.
+            logger.debug("inline menu unavailable, using the plain menu", exc_info=True)
     print_question(title)
     options_text = render_menu_options(options)
     print(f"{_ANSWER_COLOR}{options_text}{_RESET_COLOR}" if _isatty() else options_text)

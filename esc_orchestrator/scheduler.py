@@ -5,14 +5,14 @@ import logging
 import queue
 import threading
 from pathlib import Path
-from typing import Protocol, Any
+from typing import Any, Protocol
 
-from esc_orchestrator.initiative import analyze_task_impact
-from esc_orchestrator.runtime import PreDispatchBlockerError
-from esc_orchestrator.store import Store
 from esc_exec.checkpoints import checkpoint_document
 from esc_exec.registry import resolve_route
 from esc_exec.yaml_io import load_yaml, write_yaml
+from esc_orchestrator.initiative import analyze_task_impact
+from esc_orchestrator.runtime import PreDispatchBlockerError
+from esc_orchestrator.store import Store
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +197,7 @@ class Scheduler:
                         self._advance(task_id)
                     except Exception:
                         logger.warning("could not advance dependents of task %s", task_id, exc_info=True)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- worker boundary: any task failure becomes a recorded failed run
                 error = str(exc)[:1000]
                 # Any PreDispatchBlockerError (ArchitectureCoverageError,
                 # EnvironmentPrerequisiteError -- see

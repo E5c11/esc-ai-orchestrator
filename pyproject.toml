@@ -11,9 +11,38 @@ license = {text = "Apache-2.0"}
 classifiers = ["License :: OSI Approved :: Apache Software License"]
 dependencies = ["esc-ai-execution-framework>=0.1.0"]
 
+[project.optional-dependencies]
+dev = ["pytest", "import-linter>=2", "ruff"]
+
 [project.scripts]
 esc-orchestrator = "esc_orchestrator.cli:main"
 escape-ai = "esc_orchestrator.escape_ai_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["esc_orchestrator*"]
+
+# Architecture enforcement (ARCH-PY / PLAT-PY-IMPORT-LINTER). Layer contracts live in .importlinter.
+# Rule families are the subset the code already satisfies; complexity rules (C901, PLR0912,
+# PLR0915) are deliberately not enabled yet -- 5 functions each exceed the defaults and need
+# refactoring first, not a suppression.
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["."]
+
+[tool.ruff.lint]
+select = ["F", "I", "B", "T20", "TID", "BLE", "S101", "S110", "S602", "S604", "S605", "S608", "DTZ", "E722", "SIM105"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["esc_orchestrator", "esc_exec"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"subprocess".msg = "Process execution belongs in a gateway module (PYGW-PROC-01)."
+"sqlite3".msg = "Persistence I/O belongs in the store (ARCH-PY-DEP-01)."
+
+[tool.ruff.lint.per-file-ignores]
+"esc_orchestrator/entrypoints/**" = ["T201"]   # entrypoints may print
+"esc_orchestrator/api.py" = ["T201", "BLE001"] # HTTP surface: prints and translates any error to a 400
+"esc_orchestrator/store.py" = ["TID251"]       # the SQLite store is the one place sqlite3 is allowed
+"esc_orchestrator/escape_ai_cli.py" = ["F401", "I001"]  # compatibility facade: re-exports by design
+"tests/**" = ["S101", "T20", "BLE001", "B011", "TID251"]

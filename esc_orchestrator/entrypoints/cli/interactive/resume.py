@@ -121,7 +121,7 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
             print("Cancelled -- nothing was promoted.")
             return 0
         path = promote_checkpoint(repository_path, task_id, candidate)
-        print(f"Merged worktree back; no checkpoint to record." if path is None else f"Promoted checkpoint to {path}")
+        print("Merged worktree back; no checkpoint to record." if path is None else f"Promoted checkpoint to {path}")
         return 0
 
     if action_choice == 2:

@@ -6,7 +6,6 @@ from typing import Any
 from esc_exec.json_io import write_json
 from esc_exec.registry import read_registry
 from esc_exec.yaml_io import load_yaml
-
 from esc_orchestrator.store import Store
 
 

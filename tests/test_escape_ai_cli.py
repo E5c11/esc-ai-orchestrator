@@ -3164,8 +3164,7 @@ class ConfigureSystemRenderingTests(unittest.TestCase):
         self.assertIn("Durable decisions: (none)", rendered)
 
     def test_render_repository_list_empty(self):
-        with TemporaryDirectory() as temp:
-            self.assertEqual("No repositories registered yet.", cli.render_repository_list([]))
+        self.assertEqual("No repositories registered yet.", cli.render_repository_list([]))
 
     def test_render_repository_list_shows_resolved_path(self):
         with TemporaryDirectory() as temp:

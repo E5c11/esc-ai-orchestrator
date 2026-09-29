@@ -8,11 +8,11 @@ from esc_exec.claude_client import ClaudeCodeClient
 from esc_exec.claude_code_adapter import ClaudeCodeAdapter
 from esc_exec.codex_adapter import CodexAdapter, CodexClient
 from esc_exec.environment import check_prerequisites
+from esc_exec.json_io import write_json
 from esc_exec.opencode_adapter import OpenCodeAdapter, OpenCodeClient
 from esc_exec.registry import resolve_route
 from esc_exec.task_context import build_task_context, build_verification_plan
 from esc_exec.verification_execution import execute_verification_plan
-from esc_exec.json_io import write_json
 from esc_exec.yaml_io import write_yaml
 
 

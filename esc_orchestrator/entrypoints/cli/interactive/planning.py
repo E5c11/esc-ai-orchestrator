@@ -4,12 +4,12 @@ import re
 from pathlib import Path
 from typing import Any
 
+from esc_exec.ai_suggestions import suggest_architecture_coverage_gap, suggest_work_type_drift
 from esc_exec.architecture_lookup import (
     load_architecture_index,
     resolve_architecture_docs,
 )
 from esc_exec.claude_client import ClaudeCodeClient
-from esc_exec.ai_suggestions import suggest_architecture_coverage_gap, suggest_work_type_drift
 from esc_exec.local_architecture import write_local_architecture_note
 from esc_exec.onboarding import ARCHITECTURE_FRAMEWORK_ID
 from esc_exec.planning import (
