@@ -6,7 +6,8 @@ from typing import Any
 from esc_exec.json_io import write_json
 from esc_exec.registry import read_registry
 from esc_exec.yaml_io import load_yaml
-from esc_orchestrator.store import Store
+from esc_orchestrator.application.ports import StateStore
+from esc_orchestrator.domain.errors import NotFoundError
 
 
 def _discover_initiative_graph(registry: Path, initiative_id: str) -> dict[str, list[str]]:
@@ -36,13 +37,13 @@ def _discover_initiative_graph(registry: Path, initiative_id: str) -> dict[str, 
     return graph
 
 
-def _is_task_complete(store: Store, node: str) -> bool:
+def _is_task_complete(store: StateStore, node: str) -> bool:
     _, task_id = node.split("/", 1)
     task = store.get_task(task_id)
     return task is not None and task["status"] == "succeeded"
 
 
-def find_ready_tasks(store: Store, registry: Path, initiative_id: str) -> list[str]:
+def find_ready_tasks(store: StateStore, registry: Path, initiative_id: str) -> list[str]:
     """
     Every task declared in `initiative_id` -- across every registered repository --
     whose depends_on is already fully satisfied but that has no Store history at all
@@ -71,7 +72,7 @@ def find_ready_tasks(store: Store, registry: Path, initiative_id: str) -> list[s
 
 
 def analyze_task_impact(
-    store: Store, registry: Path, completed_task_id: str, output: Path | None = None,
+    store: StateStore, registry: Path, completed_task_id: str, output: Path | None = None,
 ) -> dict[str, Any]:
     """
     Given a task that just completed, determines which other tasks declared in the
@@ -95,7 +96,7 @@ def analyze_task_impact(
     """
     completed = store.get_task(completed_task_id)
     if completed is None:
-        raise ValueError(f"no such task: {completed_task_id}")
+        raise NotFoundError(f"no such task: {completed_task_id}")
     completed_task = store.contracts(completed_task_id)["task"]["task"]
     initiative = completed_task.get("initiative") or {}
     initiative_id = initiative.get("id")

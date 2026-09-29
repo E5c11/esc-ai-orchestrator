@@ -10,13 +10,17 @@ from esc_exec.planning import (
     planning_questions,
     route_objective,
 )
+from esc_orchestrator.application.errors import translates_engine_errors
 from esc_orchestrator.application.ports import StateStore
-from esc_orchestrator.application.repositories import resolve_repository
+from esc_orchestrator.application.repositories import planning_process_metrics, resolve_repository
+from esc_orchestrator.domain.errors import ConflictError, IncompleteError, InvalidInputError, NotFoundError
+from esc_orchestrator.domain.intents import initiative_id_for, work_type_for
 
 
+@translates_engine_errors
 def draft_plan(store: StateStore, registry: Path, initiative_id: str, work_type: str, objective: str, repository_values: list[str]) -> dict[str, Any]:
     if work_type not in WORK_TYPES:
-        raise ValueError(f"work_type must be one of: {', '.join(WORK_TYPES)}")
+        raise InvalidInputError(f"work_type must be one of: {', '.join(WORK_TYPES)}")
     repositories: list[str] = []
     routing: dict[str, list[dict[str, Any]]] = {}
     matches_by_repo: dict[str, list] = {}
@@ -37,6 +41,7 @@ def draft_plan(store: StateStore, registry: Path, initiative_id: str, work_type:
     }
 
 
+@translates_engine_errors
 def apply_plan(
     store: StateStore, registry: Path, initiative_id: str, answers: dict[str, Any],
     local_architecture_notes_by_repo: dict[str, list[str]] | None = None,
@@ -70,7 +75,7 @@ def apply_plan(
     """
     draft = store.get_plan_draft(initiative_id)
     if draft is None:
-        raise ValueError(f"no plan draft for `{initiative_id}`; draft first")
+        raise NotFoundError(f"no plan draft for `{initiative_id}`; draft first")
     repositories = draft["repositories"]
     components_by_repo = answers.get("components", {})
     completion_conditions = answers.get("completion_conditions", [])
@@ -122,3 +127,48 @@ def apply_plan(
     store.save_plan_result(initiative_id, answers, result)
     return result, dependency_graph
 
+
+
+def store_plan_answers(store: StateStore, initiative_id: str, answers: dict[str, Any]) -> None:
+    """Record plan answers for a later `apply`."""
+    store.save_plan_pending_answers(initiative_id, answers)
+
+
+@translates_engine_errors
+def apply_pending_plan(store: StateStore, registry: Path, initiative_id: str) -> tuple[dict[str, Any], dict[str, list[str]] | None]:
+    """Apply the answers recorded by `store_plan_answers`; `IncompleteError` when there are none."""
+    pending = store.get_plan_pending_answers(initiative_id)
+    if pending is None:
+        raise IncompleteError(f"no pending answers for `{initiative_id}`; run `escape-ai initiative answer` first.")
+    return apply_plan(store, registry, initiative_id, pending["answers"])
+
+
+def plan_status(store: StateStore, initiative_id: str) -> dict[str, Any]:
+    """Where an initiative is in draft -> answer -> apply, plus its still-unanswered `questions`."""
+    draft = store.get_plan_draft(initiative_id)
+    return {
+        "initiative_id": initiative_id,
+        "has_draft": draft is not None,
+        "has_pending_answers": store.get_plan_pending_answers(initiative_id) is not None,
+        "has_result": store.get_plan_result(initiative_id) is not None,
+        "process_metrics": planning_process_metrics(store, initiative_id),
+        "questions": draft["questions"] if draft else [],
+    }
+
+
+@translates_engine_errors
+def draft_intent(
+    store: StateStore, registry: Path, verb: str, objective: str, repositories: list[str] | None,
+    initiative_id: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Draft an initiative for an intent verb. Returns `(initiative_id, draft)`.
+
+    The verb only selects the procedure (`work_type_for`); every gate lives in the procedure and the
+    execution machinery."""
+    work_type = work_type_for(verb)
+    if not repositories:
+        raise InvalidInputError(f"`{verb}` needs at least one repository: -r <repository-id-or-path>")
+    initiative_id = initiative_id or initiative_id_for(verb, objective)
+    if store.get_plan_draft(initiative_id) is not None:
+        raise ConflictError(f"initiative `{initiative_id}` already exists; pass --initiative-id to use another name.")
+    return initiative_id, draft_plan(store, registry, initiative_id, work_type, objective, repositories)

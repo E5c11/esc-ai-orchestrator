@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
+
 from esc_exec.procedures import PROCEDURES
+from esc_orchestrator.domain.errors import UnavailableError
 
 # BLA-42: the public intent verbs. Each is a front door onto
 # esc_exec.procedures.PROCEDURES[verb]; the value is the esc_exec.planning.WORK_TYPES
@@ -46,3 +49,17 @@ def intent_for_work_type(work_type: str) -> str | None:
             return verb
     return None
 
+
+
+def initiative_id_for(verb: str, objective: str) -> str:
+    """A default initiative slug for an intent verb and its objective."""
+    slug = re.sub(r"[^a-z0-9]+", "-", objective.lower()).strip("-")[:40].strip("-")
+    return f"{verb}-{slug}" if slug else verb
+
+
+def work_type_for(verb: str) -> str:
+    """The planning work type an intent verb drafts as, or `UnavailableError` when the verb has no pipeline yet."""
+    work_type = INTENT_WORK_TYPES[verb]
+    if work_type is None:
+        raise UnavailableError(f"`{verb}` has no pipeline yet (planned in BLA-44). Its procedure will be:")
+    return work_type

@@ -2,10 +2,10 @@ import builtins
 import io
 import json
 import subprocess
+import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 from unittest.mock import patch
 
 from esc_exec.indexing import generate_indexes
@@ -13,9 +13,9 @@ from esc_exec.manifests import component_manifest_path, generate_gradle_manifest
 from esc_exec.registry import add_route, set_provider
 from esc_exec.roadmap import load_project_roadmap, save_project_roadmap
 from esc_exec.yaml_io import load_yaml, write_yaml
-
 from esc_orchestrator import escape_ai_cli as cli
 from esc_orchestrator.application import providers
+from esc_orchestrator.domain.errors import InvalidInputError
 from esc_orchestrator.entrypoints.cli.interactive import conversation as conversation_flow
 from esc_orchestrator.entrypoints.cli.interactive import onboarding as onboarding_flow
 from esc_orchestrator.entrypoints.cli.interactive import planning as planning_flow
@@ -3674,7 +3674,7 @@ class ProviderTests(unittest.TestCase):
         providers.claude_cli_available = lambda binary="claude": False
         try:
             with TemporaryDirectory() as temp:
-                with self.assertRaisesRegex(ValueError, "not found on PATH"):
+                with self.assertRaisesRegex(InvalidInputError, "not found on PATH"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "claude", "subscription")
         finally:
             providers.claude_cli_available = original
@@ -3697,7 +3697,7 @@ class ProviderTests(unittest.TestCase):
         providers.claude_auth_status = lambda binary="claude": {"loggedIn": False}
         try:
             with TemporaryDirectory() as temp:
-                with self.assertRaisesRegex(ValueError, "not logged in"):
+                with self.assertRaisesRegex(InvalidInputError, "not logged in"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "claude", "subscription")
         finally:
             providers.claude_cli_available, providers.claude_auth_status = original_available, original_status
@@ -3711,7 +3711,7 @@ class ProviderTests(unittest.TestCase):
         providers.claude_auth_status = lambda binary="claude": None
         try:
             with TemporaryDirectory() as temp:
-                with self.assertRaisesRegex(ValueError, "not logged in"):
+                with self.assertRaisesRegex(InvalidInputError, "not logged in"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "claude", "subscription")
         finally:
             providers.claude_cli_available, providers.claude_auth_status = original_available, original_status
@@ -3721,7 +3721,7 @@ class ProviderTests(unittest.TestCase):
         providers.claude_cli_available = lambda binary="claude": False
         try:
             with TemporaryDirectory() as temp:
-                with self.assertRaisesRegex(ValueError, "npm install -g @anthropic-ai/claude-code"):
+                with self.assertRaisesRegex(InvalidInputError, "npm install -g @anthropic-ai/claude-code"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "claude", "subscription")
         finally:
             providers.claude_cli_available = original
@@ -3743,7 +3743,7 @@ class ProviderTests(unittest.TestCase):
         providers.codex_cli_available = lambda binary="codex": False
         try:
             with TemporaryDirectory() as temp:
-                with self.assertRaisesRegex(ValueError, "npm install -g @openai/codex"):
+                with self.assertRaisesRegex(InvalidInputError, "npm install -g @openai/codex"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "openai", "subscription")
         finally:
             providers.codex_cli_available = original
@@ -3754,7 +3754,7 @@ class ProviderTests(unittest.TestCase):
         providers.codex_auth_status = lambda binary="codex": None
         try:
             with TemporaryDirectory() as temp:
-                with self.assertRaisesRegex(ValueError, "not logged in"):
+                with self.assertRaisesRegex(InvalidInputError, "not logged in"):
                     cli.connect_provider(Path(temp) / "registry.yaml", "openai", "subscription")
         finally:
             providers.codex_cli_available, providers.codex_auth_status = original_available, original_status

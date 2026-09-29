@@ -1,10 +1,10 @@
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 
 from esc_exec.registry import add_route
 from esc_exec.yaml_io import write_yaml
-
+from esc_orchestrator.domain.errors import NotFoundError
 from esc_orchestrator.initiative import analyze_task_impact, find_ready_tasks
 from esc_orchestrator.store import Store
 
@@ -128,7 +128,7 @@ class TaskImpactAnalysisTests(unittest.TestCase):
         self.assertEqual({}, document["still_blocked"])
 
     def test_missing_task_raises(self):
-        with self.assertRaisesRegex(ValueError, "no such task"):
+        with self.assertRaisesRegex(NotFoundError, "no such task"):
             analyze_task_impact(self.store, self.registry, "does-not-exist")
 
     def test_cross_repository_dependent_becomes_unblocked(self):

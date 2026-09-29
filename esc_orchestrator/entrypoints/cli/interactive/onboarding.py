@@ -17,6 +17,7 @@ from esc_orchestrator.application.repositories import (
     repository_map,
     resolve_repository,
 )
+from esc_orchestrator.domain.errors import AppError, NotFoundError, UnsupportedRepositoryError
 from esc_orchestrator.entrypoints.cli.interactive.configure import (
     prompt_provider_setup_interactive,
 )
@@ -143,7 +144,7 @@ def _unfinished_onboarding_label(store: Store, registry: Path, repository_id: st
     try:
         resolve_repository(repository_id, registry)
         warning = ""
-    except (KeyError, FileNotFoundError, ValueError):
+    except AppError:
         warning = " -- path no longer resolvable"
     proposal_record = store.get_onboarding_proposal(repository_id)
     pending = len(proposal_record["proposal"].get("semantic_questions", [])) if proposal_record else 0
@@ -208,7 +209,7 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
 
     try:
         repository_id, repository_path = resolve_repository(raw, registry)
-    except ValueError as exc:
+    except UnsupportedRepositoryError as exc:
         # A real directory exists but no adapter detected a build system in it
         # ("empty-but-real" -- see plan/done/scaffold-new-or-empty-repository.md).
         print(render_wizard_suggestion(
@@ -216,7 +217,7 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
             "Then come back to this menu and enter the path again.",
         ))
         return 1
-    except (KeyError, FileNotFoundError):
+    except NotFoundError:
         # Not an existing directory, and not a registered repository either --
         # "no location at all" collapses into the same answer as the case above.
         print(render_wizard_suggestion(
@@ -257,7 +258,7 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
     existing_proposal = store.get_onboarding_proposal(repository_id)
     try:
         proposal = analyze(store, registry, repository_id, repository_path, extra_resolved or None)
-    except (OSError, ValueError) as exc:
+    except AppError as exc:
         print(f"Analysis failed: {exc}")
         return 1
 
@@ -311,7 +312,7 @@ def run_onboarding_interactive(store: Store, registry: Path) -> int:
             resolved_components=extra_resolved or None,
             excluded_component_ids=sorted(newly_excluded_ids) or None,
         )
-    except (OSError, ValueError) as exc:
+    except AppError as exc:
         print(f"Apply failed: {exc}")
         return 1
     print(render_apply_result(result))

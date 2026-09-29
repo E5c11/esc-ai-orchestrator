@@ -14,6 +14,7 @@ from esc_exec.registry import resolve_route
 from esc_exec.task_context import build_task_context, build_verification_plan
 from esc_exec.verification_execution import execute_verification_plan
 from esc_exec.yaml_io import write_yaml
+from esc_orchestrator.application.doctor import architecture_coverage_blockers
 
 
 class PreDispatchBlockerError(Exception):
@@ -56,36 +57,6 @@ class EnvironmentPrerequisiteError(PreDispatchBlockerError):
     """
 
 
-def _architecture_coverage_blockers(context: dict[str, Any]) -> list[str]:
-    blockers = []
-    for component in context["routing"]["components"]:
-        architecture = component.get("architecture") or {}
-        for doc_id in architecture.get("missing", []):
-            blockers.append(f"{component['id']}: architecture doc {doc_id} does not exist")
-        for doc_id in architecture.get("stubs", []):
-            blockers.append(f"{component['id']}: architecture doc {doc_id} is still a stub, not yet active")
-    return blockers
-
-
-def doctor_check(repository: Path, task_path: Path, registry: Path) -> list[str]:
-    """
-    Runs every pre-dispatch gate `_AdapterRuntime.execute` runs before an agent is
-    ever dispatched -- architecture coverage, then environment prerequisites -- and
-    returns the combined blocker list instead of raising, so both `_AdapterRuntime.
-    execute` (which wants to raise) and the standalone `task doctor` CLI command
-    (which wants to print) can share one implementation. An empty list means both
-    gates are clean; it says nothing about whether the verification gate *commands*
-    themselves would actually pass once dispatched.
-    """
-    with TemporaryDirectory() as temp:
-        root = Path(temp)
-        context = build_task_context(repository, task_path, root / "task-context.json", registry_path=registry)
-        blockers = _architecture_coverage_blockers(context)
-        plan = build_verification_plan(repository, task_path, root / "verification-plan.json")
-        blockers += check_prerequisites(plan, repository)
-        return blockers
-
-
 class _AdapterRuntime:
     """
     Shared `Runtime.execute(contracts) -> Path` glue: write the in-memory portable
@@ -118,7 +89,7 @@ class _AdapterRuntime:
             context = build_task_context(
                 repository, paths["task"], root / "task-context.json", registry_path=self.registry
             )
-            blockers = _architecture_coverage_blockers(context)
+            blockers = architecture_coverage_blockers(context)
             if blockers:
                 raise ArchitectureCoverageError(blockers)
             plan = build_verification_plan(repository, paths["task"], root / "verification-plan.json")

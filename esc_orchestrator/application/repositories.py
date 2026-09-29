@@ -16,7 +16,9 @@ from esc_exec.model import ValidationResult
 from esc_exec.onboarding import analyze_repository, apply_onboarding_answers
 from esc_exec.registry import add_route, read_registry, resolve_route
 from esc_exec.yaml_io import load_yaml
+from esc_orchestrator.application.errors import translates_engine_errors
 from esc_orchestrator.application.ports import StateStore
+from esc_orchestrator.domain.errors import IncompleteError, NotFoundError, UnsupportedRepositoryError
 from esc_orchestrator.domain.repositories import RepositoryLocation
 
 # ---------------------------------------------------------------------------
@@ -24,13 +26,17 @@ from esc_orchestrator.domain.repositories import RepositoryLocation
 # what the end-to-end test exercises against a real repository.
 # ---------------------------------------------------------------------------
 
+@translates_engine_errors
 def resolve_repository(value: str, registry: Path) -> tuple[str, Path]:
     """Resolve `value` as a registered repository ID, or as a filesystem path --
     registering it under its detected repository ID if it isn't registered yet."""
     candidate = Path(value).expanduser()
     if candidate.is_dir():
         path = candidate.resolve()
-        repository_id, _, _ = detect_build_system(path)
+        try:
+            repository_id, _, _ = detect_build_system(path)
+        except ValueError as exc:
+            raise UnsupportedRepositoryError(str(exc)) from exc
         try:
             resolve_route(registry, "repositories", repository_id)
         except (KeyError, FileNotFoundError):
@@ -39,6 +45,7 @@ def resolve_repository(value: str, registry: Path) -> tuple[str, Path]:
     return value, resolve_route(registry, "repositories", value)
 
 
+@translates_engine_errors
 def analyze(
     store: StateStore, registry: Path, repository_id: str, repository_path: Path,
     extra_resolved_components: dict[str, str] | None = None,
@@ -48,13 +55,14 @@ def analyze(
     return proposal
 
 
+@translates_engine_errors
 def apply_answers(
     store: StateStore, registry: Path, repository_id: str, repository_path: Path, answers: dict[str, Any],
     resolved_components: dict[str, str] | None = None, excluded_component_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     record = store.get_onboarding_proposal(repository_id)
     if record is None:
-        raise ValueError(f"no onboarding proposal for `{repository_id}`; analyze first")
+        raise NotFoundError(f"no onboarding proposal for `{repository_id}`; analyze first")
     result = apply_onboarding_answers(
         repository_path, record["proposal"], answers, registry, resolved_components, excluded_component_ids,
     )
@@ -62,6 +70,7 @@ def apply_answers(
     return result
 
 
+@translates_engine_errors
 def onboarding_process_metrics(store: StateStore, repository_id: str) -> dict[str, Any] | None:
     """None until both a proposal and applied answers exist -- there is no elapsed
     time to report for an in-progress or never-started onboarding."""
@@ -77,6 +86,7 @@ def onboarding_process_metrics(store: StateStore, repository_id: str) -> dict[st
     )
 
 
+@translates_engine_errors
 def planning_process_metrics(store: StateStore, initiative_id: str) -> dict[str, Any] | None:
     draft_record = store.get_plan_draft(initiative_id)
     result_record = store.get_plan_result(initiative_id)
@@ -109,6 +119,7 @@ def repository_status(store: StateStore, registry: Path, repository_id: str) -> 
     }
 
 
+@translates_engine_errors
 def validate_all(repository_path: Path, registry: Path) -> list[ValidationResult]:
     results = list(validate_repository(repository_path, registry))
     results += validate_indexes(repository_path)
@@ -151,6 +162,7 @@ def repository_locations(repository_ids: list[str], registry: Path) -> list[Repo
     return locations
 
 
+@translates_engine_errors
 def repository_map(repository_path: Path) -> dict[str, Any]:
     """Read what onboarding produced from the generated manifests on disk (input to the pure
     `render_onboarding_map`)."""
@@ -171,3 +183,21 @@ def repository_map(repository_path: Path) -> dict[str, Any]:
         "id": repository["repository"]["id"], "type": repository["repository"]["type"],
         "components": components, "excluded": repository.get("excluded_components") or [],
     }
+
+
+@translates_engine_errors
+def store_answers(store: StateStore, registry: Path, repository: str, answers: dict[str, Any]) -> str:
+    """Record onboarding answers for a later `apply`; returns the resolved repository id."""
+    repository_id, _ = resolve_repository(repository, registry)
+    store.save_pending_answers(repository_id, answers)
+    return repository_id
+
+
+@translates_engine_errors
+def apply_pending_answers(store: StateStore, registry: Path, repository: str) -> dict[str, Any]:
+    """Apply the answers recorded by `store_answers`; `IncompleteError` when there are none."""
+    repository_id, repository_path = resolve_repository(repository, registry)
+    pending = store.get_pending_answers(repository_id)
+    if pending is None:
+        raise IncompleteError(f"no pending answers for `{repository_id}`; run `escape-ai repository answer` first.")
+    return apply_answers(store, registry, repository_id, repository_path, pending["answers"])

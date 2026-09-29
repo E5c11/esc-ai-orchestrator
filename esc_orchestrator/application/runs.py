@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from esc_exec.checkpoints import checkpoint_path, create_checkpoint, update_checkpoint
-from esc_exec.registry import read_registry
+from esc_exec.registry import active_provider, read_registry
 from esc_exec.worktree import diff_summary, merge_worktree
 from esc_exec.yaml_io import load_yaml
+from esc_orchestrator.application.doctor import doctor_check
+from esc_orchestrator.application.errors import translates_engine_errors
 from esc_orchestrator.application.ports import StateStore
 from esc_orchestrator.application.providers import (
     DEFAULT_OPENCODE_SERVER,
@@ -15,9 +18,13 @@ from esc_orchestrator.application.providers import (
     resolve_default_policy,
     resolve_runtime,
 )
+from esc_orchestrator.application.repositories import resolve_repository
+from esc_orchestrator.domain.errors import IncompleteError, NotFoundError
+from esc_orchestrator.initiative import analyze_task_impact
 from esc_orchestrator.scheduler import Scheduler
 
 
+@translates_engine_errors
 def active_work(store: StateStore, registry: Path) -> list[dict[str, Any]]:
     """Read-only: every registered repository's `.esc-ai/workflows/active/*/task.yaml`,
     cross-referenced against this orchestrator's own run/attempt records. No writes."""
@@ -53,6 +60,7 @@ def active_work(store: StateStore, registry: Path) -> list[dict[str, Any]]:
     return items
 
 
+@translates_engine_errors
 def prior_consent(store: StateStore, task_id: str) -> dict[str, Any] | None:
     """
     The most recent run's recorded `bindings.consent`, if any -- see
@@ -74,6 +82,7 @@ def prior_consent(store: StateStore, task_id: str) -> dict[str, Any] | None:
     return run_document.get("bindings", {}).get("consent")
 
 
+@translates_engine_errors
 def run_detail(store: StateStore, task_id: str) -> dict[str, Any]:
     """
     "Observe a run" -- a read-only drill-down over a task's latest recorded run,
@@ -123,6 +132,7 @@ def _task_id_suggestions(repository_path: Path, task_id: str) -> list[str]:
     )
 
 
+@translates_engine_errors
 def execute_task(
     store: StateStore, registry: Path, repository_id: str, repository_path: Path, task_id: str, provider: dict[str, Any],
     runtime: Any = None, opencode_server: str = DEFAULT_OPENCODE_SERVER,
@@ -137,11 +147,7 @@ def execute_task(
     `provider` must be an already-connected provider record (see
     ensure_provider_configured) -- this function does not prompt or default one.
     """
-    task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
-    if not task_path.is_file():
-        suggestions = _task_id_suggestions(repository_path, task_id)
-        hint = f"did you mean: {', '.join(suggestions)}?" if suggestions else "plan apply first"
-        raise ValueError(f"no task.yaml found for `{task_id}` in `{repository_id}`; {hint}")
+    task_path = locate_task(repository_path, repository_id, task_id)
     contracts = {
         "task": load_yaml(task_path),
         "workspace": default_workspace(repository_id),
@@ -162,6 +168,7 @@ def execute_task(
     }
 
 
+@translates_engine_errors
 def checkpoint_candidate(store: StateStore, repository_path: Path, task_id: str) -> dict[str, Any]:
     """
     A failed run's real checkpoint.yaml is the usual candidate. A *succeeded*
@@ -180,7 +187,7 @@ def checkpoint_candidate(store: StateStore, repository_path: Path, task_id: str)
     """
     run = store.get_latest_run_for_task(task_id)
     if run is None or not run.get("output_path"):
-        raise ValueError(f"no run with a checkpoint candidate for `{task_id}`")
+        raise NotFoundError(f"no run with a checkpoint candidate for `{task_id}`")
     candidate_path = Path(run["output_path"]) / "checkpoint.yaml"
     if candidate_path.is_file():
         return {"run_id": run["id"], **load_yaml(candidate_path)}
@@ -213,9 +220,10 @@ def checkpoint_candidate(store: StateStore, repository_path: Path, task_id: str)
                 "blockers": [], "artifacts": [],
             },
         }
-    raise ValueError(f"no checkpoint candidate found for `{task_id}`")
+    raise NotFoundError(f"no checkpoint candidate found for `{task_id}`")
 
 
+@translates_engine_errors
 def promote_checkpoint(repository_path: Path, task_id: str, candidate: dict[str, Any]) -> Path | None:
     """Promotes a transient run-failure checkpoint candidate into the durable,
     committable location -- always after human review of `candidate`'s contents,
@@ -248,7 +256,7 @@ def promote_checkpoint(repository_path: Path, task_id: str, candidate: dict[str,
     checkpoint, progress = candidate["checkpoint"], candidate["progress"]
     task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
     if not task_path.is_file():
-        raise ValueError(f"no task.yaml for `{task_id}` to attach the checkpoint to")
+        raise NotFoundError(f"no task.yaml for `{task_id}` to attach the checkpoint to")
     kwargs = dict(
         run_id=checkpoint.get("run_id"), status=checkpoint.get("status", "blocked"),
         completed=progress.get("completed"), decisions=progress.get("decisions"),
@@ -261,14 +269,70 @@ def promote_checkpoint(repository_path: Path, task_id: str, candidate: dict[str,
 
 
 
+@translates_engine_errors
 def worktree_diff(repository_path: Path, task_id: str) -> str:
     """`git diff --stat` of a task's worktree branch, or "" -- the effectful input to the pure
     `render_checkpoint_candidate` / `render_run_detail`."""
     return diff_summary(repository_path, task_id) or ""
 
 
+@translates_engine_errors
 def run_worktree_diff(detail: dict[str, Any], repository_path: Path) -> str:
     """The worktree diff for a run's checkpoint candidate, or "" when the run has none (no git
     call is made then)."""
     checkpoint = detail.get("checkpoint")
     return worktree_diff(repository_path, checkpoint["task_id"]) if checkpoint is not None else ""
+
+
+def locate_task(repository_path: Path, repository_id: str, task_id: str) -> Path:
+    """The path of an active task's `task.yaml`, or a `NotFoundError` that suggests close matches."""
+    task_path = repository_path / ".esc-ai" / "workflows" / "active" / task_id / "task.yaml"
+    if task_path.is_file():
+        return task_path
+    suggestions = _task_id_suggestions(repository_path, task_id)
+    raise NotFoundError(
+        f"no task.yaml found for `{task_id}` in `{repository_id}`",
+        hint=f"did you mean: {', '.join(suggestions)}?" if suggestions else None,
+    )
+
+
+@dataclass(frozen=True)
+class TaskRunPreview:
+    """Everything a human reviews before deciding to execute a task (input to `render_execution_preview`)."""
+    repository_id: str
+    repository_path: Path
+    task_document: dict[str, Any]
+    provider: dict[str, Any] | None
+    policy: dict[str, Any]
+    consent: dict[str, Any] | None
+
+
+@translates_engine_errors
+def prepare_task_run(store: StateStore, registry: Path, repository: str, task_id: str) -> TaskRunPreview:
+    repository_id, repository_path = resolve_repository(repository, registry)
+    task_document = load_yaml(locate_task(repository_path, repository_id, task_id))
+    return TaskRunPreview(
+        repository_id, repository_path, task_document, active_provider(registry),
+        resolve_default_policy(registry), prior_consent(store, task_id),
+    )
+
+
+def require_provider(provider: dict[str, Any] | None) -> dict[str, Any]:
+    """The connected provider, or an `IncompleteError` when none is connected yet."""
+    if provider is None:
+        raise IncompleteError("no AI provider connected; run `escape-ai provider auth <name>` first.")
+    return provider
+
+
+@translates_engine_errors
+def doctor_task(registry: Path, repository: str, task_id: str) -> tuple[str, list[str]]:
+    """`(repository_id, blockers)` from the same pre-dispatch gates a real run would hit; an empty
+    list means the gates are clean."""
+    repository_id, repository_path = resolve_repository(repository, registry)
+    return repository_id, doctor_check(repository_path, locate_task(repository_path, repository_id, task_id), registry)
+
+
+@translates_engine_errors
+def task_impact(store: StateStore, registry: Path, task_id: str) -> dict[str, Any]:
+    """Which other initiative tasks this completed task unblocks."""
+    return analyze_task_impact(store, registry, task_id)

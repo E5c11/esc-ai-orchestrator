@@ -20,6 +20,7 @@ from esc_exec.planning import (
 from esc_exec.registry import active_provider, resolve_route
 from esc_orchestrator.application.planning import apply_plan, draft_plan
 from esc_orchestrator.application.repositories import resolve_repository
+from esc_orchestrator.domain.errors import AppError
 from esc_orchestrator.domain.intents import intent_for_work_type
 from esc_orchestrator.entrypoints.cli.interactive.conversation import (
     run_form_driven_planning_conversation_interactive,
@@ -167,7 +168,7 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
     if work_type_options[choice] == CHAT_ABOUT_IT_OPTION:
         try:
             _, repository_path_for_chat = resolve_repository(repository_values[0], registry)
-        except (KeyError, FileNotFoundError) as exc:
+        except AppError as exc:
             print(f"Could not resolve this repository: {exc}")
             return 1
         form = run_form_driven_planning_conversation_interactive(registry, repository_path_for_chat, objective)
@@ -189,7 +190,7 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
 
     try:
         draft = draft_plan(store, registry, initiative_id, work_type, objective, repository_values)
-    except (OSError, ValueError, KeyError, FileNotFoundError) as exc:
+    except AppError as exc:
         print(f"Could not draft this plan: {exc}")
         return 1
     print(render_plan_draft(draft))
@@ -250,7 +251,7 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
                 registry, repository_path_for_check, work_type, objective,
                 answers.get("scope_boundary", ""), answers.get("completion_conditions", []),
             )
-        except (KeyError, FileNotFoundError):
+        except AppError:
             confirmed_work_type = work_type  # repo no longer resolvable -- skip the check, don't block planning over it
         if confirmed_work_type != work_type:
             store.save_plan_draft(initiative_id, confirmed_work_type, objective, draft["repositories"], draft["routing"], draft["questions"])
@@ -259,7 +260,7 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
     for repository_id in draft["repositories"]:
         try:
             _, repository_path_for_notes = resolve_repository(repository_id, registry)
-        except (KeyError, FileNotFoundError):
+        except AppError:
             continue
         notes = offer_local_architecture_note_interactive(
             registry, repository_path_for_notes, objective, answers.get("components", {}).get(repository_id, []),
@@ -273,7 +274,7 @@ def run_planning_interactive(store: Store, registry: Path, prefilled_repository_
 
     try:
         result, dependency_chain = apply_plan(store, registry, initiative_id, answers, local_architecture_notes_by_repo)
-    except (OSError, ValueError) as exc:
+    except AppError as exc:
         print(f"Apply failed: {exc}")
         return 1
     print(render_plan_result(result, dependency_chain))

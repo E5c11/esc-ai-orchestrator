@@ -20,6 +20,7 @@ from esc_orchestrator.application.repositories import (
     repository_locations,
     resolve_repository,
 )
+from esc_orchestrator.domain.errors import AppError
 from esc_orchestrator.domain.policy_profiles import POLICY_PROFILES
 from esc_orchestrator.entrypoints.cli.render import (
     render_policy_status,
@@ -63,7 +64,7 @@ def _pick_and_connect_provider_interactive(registry: Path) -> dict[str, Any] | N
 
     try:
         provider = connect_provider(registry, provider_id, route)
-    except ValueError as exc:
+    except AppError as exc:
         print(f"Could not connect: {exc}")
         return None
     print(f"Connected `{provider_id}` ({route}).")

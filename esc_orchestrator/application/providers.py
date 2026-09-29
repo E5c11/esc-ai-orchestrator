@@ -7,6 +7,8 @@ from typing import Any
 from esc_exec.claude_client import claude_auth_status, claude_cli_available
 from esc_exec.codex_adapter import codex_auth_status, codex_cli_available
 from esc_exec.registry import default_policy_id, set_provider
+from esc_orchestrator.application.errors import translates_engine_errors
+from esc_orchestrator.domain.errors import InvalidInputError
 from esc_orchestrator.domain.policy_profiles import (
     DEFAULT_POLICY_PROFILE_ID,
     POLICY_PROFILES,
@@ -162,6 +164,7 @@ def _subscription_auth_status(provider_id: str) -> Any:
     return None
 
 
+@translates_engine_errors
 def connect_provider(registry: Path, provider_id: str, route: str) -> dict[str, Any]:
     """
     The one real write path for provider connection -- used by both the interactive
@@ -177,15 +180,15 @@ def connect_provider(registry: Path, provider_id: str, route: str) -> dict[str, 
     if route == "subscription":
         info = SUBSCRIPTION_CLI_INFO.get(provider_id)
         if info is None:
-            raise ValueError(f"`{provider_id}` has no subscription-route adapter yet; use route=api-key.")
+            raise InvalidInputError(f"`{provider_id}` has no subscription-route adapter yet; use route=api-key.")
         if not _subscription_cli_available(provider_id):
-            raise ValueError(
+            raise InvalidInputError(
                 f"`{info['binary']}` CLI not found on PATH. Install it first: {info['install']}"
                 " -- or connect with route=api-key instead."
             )
         status = _subscription_auth_status(provider_id)
         if not info["is_logged_in"](status):
-            raise ValueError(
+            raise InvalidInputError(
                 f"`{info['binary']}` is installed but not logged in yet -- {info['login_hint']}, then try again."
             )
     set_provider(registry, provider_id, route)

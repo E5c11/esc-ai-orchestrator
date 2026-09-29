@@ -5,6 +5,7 @@ from typing import Any
 
 from esc_exec.registry import active_provider
 from esc_exec.yaml_io import load_yaml
+from esc_orchestrator.application.doctor import doctor_check
 from esc_orchestrator.application.providers import resolve_default_policy
 from esc_orchestrator.application.repositories import resolve_repository
 from esc_orchestrator.application.runs import (
@@ -17,6 +18,7 @@ from esc_orchestrator.application.runs import (
     run_worktree_diff,
     worktree_diff,
 )
+from esc_orchestrator.domain.errors import AppError
 from esc_orchestrator.entrypoints.cli.interactive.configure import (
     prompt_provider_setup_interactive,
 )
@@ -28,7 +30,6 @@ from esc_orchestrator.entrypoints.cli.render import (
     render_run_detail,
 )
 from esc_orchestrator.entrypoints.cli.terminal import confirm, select_menu
-from esc_orchestrator.runtime import doctor_check
 from esc_orchestrator.store import Store
 
 
@@ -113,7 +114,7 @@ def run_resume_interactive(store: Store, registry: Path) -> int:
     if action_choice == 1:
         try:
             candidate = checkpoint_candidate(store, repository_path, task_id)
-        except ValueError as exc:
+        except AppError as exc:
             print(f"Cannot promote: {exc}")
             return 1
         print(render_checkpoint_candidate(candidate, worktree_diff(repository_path, task_id)))

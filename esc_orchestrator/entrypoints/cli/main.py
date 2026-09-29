@@ -17,6 +17,7 @@ from esc_orchestrator.entrypoints.cli.dispatch_workflow import (
     _dispatch_task,
     _rewrite_legacy_plan_argv,
 )
+from esc_orchestrator.entrypoints.cli.errors import EXIT_FAILED, report_unexpected
 from esc_orchestrator.entrypoints.cli.interactive.menu import run_interactive
 from esc_orchestrator.entrypoints.cli.parser import build_parser
 from esc_orchestrator.store import Store
@@ -39,7 +40,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(_rewrite_legacy_plan_argv(list(sys.argv[1:] if argv is None else argv)))
     registry = args.registry or default_registry_path()
     store = Store(args.db)
-    if args.command is None:
-        return run_interactive(store, registry)
-    handler = _HANDLERS.get(args.command)
-    return handler(args, store, registry) if handler else 1
+    try:
+        if args.command is None:
+            return run_interactive(store, registry)
+        handler = _HANDLERS.get(args.command)
+        return handler(args, store, registry) if handler else EXIT_FAILED
+    except Exception as exc:  # noqa: BLE001 -- top-level handler (PYERR-TRANSLATE-01): known errors were translated by the handler, so this is a bug
+        return report_unexpected(exc)
