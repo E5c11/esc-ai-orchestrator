@@ -1,6 +1,6 @@
 # Fix Workflow: the root-cause gate (BLA-43) — Plan
 
-**Status:** In progress
+**Status:** Implemented (2026-09-29); not yet merged
 **Date:** 2026-09-29
 **Objective:** Make `escape-ai fix` a real procedure: a fix cannot be planned or dispatched without a
 recorded root cause, the agent implements against that root cause, and the final report says what was wrong,
@@ -68,3 +68,34 @@ the interactive planning flow asks the questions; `render_execution_result`/prev
 - Scope is discovered (routing suggestions) and may span repositories.
 - Existing validation gates run before completion (unchanged `verify`).
 - The final output explains what was wrong, what changed and how it was validated.
+
+## Outcome
+
+Engine `bdcba8e` (571 tests, +35) and orchestrator `22bdfbc` (286 tests, +19), on `feat/bla-43-*` branches.
+
+- `esc_exec/root_cause.py` is the gate; `planning` enforces it (validated before any write, one cause copied to every
+  repository's task of a multi-repo fix); `contracts` refuses a `fix` task without one even if `task.yaml` was edited;
+  `task.yaml` now records `work_type`; all three adapter prompts carry the cause; `procedures.ROOT_CAUSE` no longer
+  says "new", so the `(not yet enforced)` marker disappeared by itself.
+- CLI: a fix draft asks for the cause first; applying without one is exit 2 with the shape to supply; the final report
+  is what was wrong / what changed (worktree diff) / how validated (verification summary); `fix --help` explains the
+  gate and its limit.
+- Interactive drift detection can reclassify a task: leaving `fix` discards the cause, becoming `fix` asks for it.
+
+### Things found while building it
+
+- The work type never reached `task.yaml`, so no stage could be enforced at execution time. (Docs: `PYUC-STAGE-06`.)
+- A gate on supplied knowledge cannot check truth. It checks presence and well-formedness and says so; `verify` tests
+  the cause. (Docs: `PYUC-STAGE-05`.)
+- My own slip: inserting a helper between `@translates_engine_errors` and `draft_plan` silently moved the decorator
+  onto the helper. A test caught it. A guard test that every public application operation is decorated would make this
+  impossible to repeat, and is worth adding.
+
+### Still open
+
+- No AI-suggested root cause (the `investigate` procedure, BLA-44). The operator supplies it.
+- Nothing checks that the agent's change actually addresses the recorded cause; only `verify` runs. A "regression test
+  added" check would need the baseline/reproduction stage (BLA-44).
+- `escape-ai fix` still needs `-r` repositories up front. Routing suggests components, and multi-repo is supported, but
+  discovering *which repositories* are affected from the problem statement alone is not built.
+- `baseline_capture` and `grounding_check` remain "(not yet enforced)".
