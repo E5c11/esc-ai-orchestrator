@@ -108,7 +108,7 @@ def run_resume_interactive(app: App) -> int:
             print("Cancelled -- nothing was executed.")
             return 0
         result = app.execute_task(repository_id, repository_path, task_id, provider)
-        print(render_execution_result(result))
+        print(render_execution_result(result, worktree_diff(repository_path, task_id)))
         return 0
 
     if action_choice == 1:

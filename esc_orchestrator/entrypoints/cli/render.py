@@ -246,6 +246,27 @@ def render_procedure(verb: str) -> str:
     return "\n".join(lines)
 
 
+INTENT_NOTES: dict[str, str] = {
+    "fix": (
+        "The root_cause gate: a fix cannot be planned until you have recorded what is actually wrong. Put this\n"
+        "in your answers file (or answer the prompts interactively):\n"
+        "\n"
+        '  "root_cause": {"statement": "the underlying cause, not the symptom",\n'
+        '                 "evidence": ["a reproduction, log line, file:line or failing test"],\n'
+        '                 "reproduction": "optional command or steps"}\n'
+        "\n"
+        "The gate checks that a cause was captured and is well-formed -- a missing one, one without evidence, or\n"
+        "one that only restates your problem statement is rejected. It cannot check that the cause is *true*:\n"
+        "the `verify` stage decides that, by running the real gates against the fix. The recorded cause is given\n"
+        "to the agent, and the final report shows what was wrong, what changed and how it was validated."
+    ),
+}
+
+
+def render_intent_notes(verb: str) -> str:
+    return INTENT_NOTES.get(verb, "")
+
+
 def render_intent_overview() -> str:
     lines = ["Intent workflows (each runs a fixed procedure; see `escape-ai <verb> --help`):"]
     lines += [f"  {verb:<12} {INTENT_SUMMARIES[verb]}" for verb in INTENT_WORK_TYPES]
@@ -333,6 +354,8 @@ def render_execution_preview(
         f"Components: {', '.join(task_document['scope']['components'])}",
         f"Provider: {provider['id']} ({provider['route']})" if provider else "Provider: none connected yet",
     ]
+    if task_document.get("root_cause"):
+        lines += render_root_cause(task_document["root_cause"])
     if policy_document is not None:
         categories = granted_categories(policy_document)
         scope_text = ", ".join(categories) if categories else "read-only"
@@ -355,10 +378,40 @@ def render_execution_preview(
     return "\n".join(lines)
 
 
-def render_execution_result(result: dict[str, Any]) -> str:
+def render_root_cause(root_cause: dict[str, Any]) -> list[str]:
+    lines = [f"Root cause: {root_cause['statement']}"]
+    lines += [f"  evidence: {item}" for item in root_cause["evidence"]]
+    if root_cause.get("reproduction"):
+        lines.append(f"  reproduce: {root_cause['reproduction']}")
+    return lines
+
+
+def render_verification(verification: dict[str, Any] | None) -> str | None:
+    if not verification or not verification.get("status"):
+        return None
+    totals = verification.get("totals") or {}
+    detail = ""
+    if totals:
+        detail = f" -- {totals.get('tests', 0)} test(s): {totals.get('passed', 0)} passed, {totals.get('failed', 0)} failed"
+        if totals.get("errors"):
+            detail += f", {totals['errors']} error(s)"
+    return f"Validation: {verification['status']}{detail}"
+
+
+def render_execution_result(result: dict[str, Any], worktree_diff: str = "") -> str:
+    """The run's final report. For a task that recorded a root cause it reads as what was wrong (the root
+    cause), what changed (the worktree diff) and how it was validated (the verification result) -- all values
+    the run already produced; nothing is recomputed or inferred here."""
     lines = [
         f"Run {result['run_id']} (attempt {result['attempt']}): {result['status']}",
     ]
+    if result.get("root_cause"):
+        lines += render_root_cause(result["root_cause"])
+    validation = render_verification(result.get("verification"))
+    if validation:
+        lines.append(validation)
+    if worktree_diff:
+        lines += ["Changes:", *(f"  {line}" for line in worktree_diff.splitlines())]
     if result.get("error"):
         lines.append(f"Error: {result['error']}")
     if result.get("output_path"):

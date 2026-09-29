@@ -8,6 +8,7 @@ from esc_orchestrator.application.providers import DEFAULT_OPENCODE_SERVER
 from esc_orchestrator.domain.intents import INTENT_SUMMARIES
 from esc_orchestrator.domain.policy_profiles import POLICY_PROFILES
 from esc_orchestrator.entrypoints.cli.render import (
+    render_intent_notes,
     render_intent_overview,
     render_procedure,
 )
@@ -46,7 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     for verb, summary in INTENT_SUMMARIES.items():
         intent = subcommands.add_parser(
             verb, help=summary, description=summary,
-            epilog=render_procedure(verb), formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="\n\n".join(part for part in (render_procedure(verb), render_intent_notes(verb)) if part),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         intent.add_argument("objective", help="What you want done, in a sentence")
         intent.add_argument(

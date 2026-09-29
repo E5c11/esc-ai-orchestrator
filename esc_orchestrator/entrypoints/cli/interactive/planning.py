@@ -16,6 +16,7 @@ from esc_exec.planning import (
     WORK_TYPES,
     architecture_doc_ids_for_components,
     load_repository_index,
+    planning_questions,
 )
 from esc_exec.registry import active_provider, resolve_route
 from esc_orchestrator.application.app import App
@@ -127,6 +128,21 @@ def offer_local_architecture_note_interactive(
         body=body or "(no detail captured yet -- expand this before promoting it.)",
     )
     return [str(note_path.relative_to(repository_path))]
+
+
+_ROOT_CAUSE_FIELDS = ("root_cause_statement", "root_cause_evidence", "root_cause_reproduction")
+
+
+def _reconcile_root_cause(answers: dict[str, Any], old_type: str, new_type: str) -> None:
+    """Keep the root cause consistent with the work type after a reclassification: a task that is no longer a
+    `fix` does not carry one, and one that has become a `fix` must have one before it can be planned."""
+    if old_type == "fix" and new_type != "fix":
+        for field in _ROOT_CAUSE_FIELDS:
+            answers.pop(field, None)
+    elif new_type == "fix" and not any(answers.get(field) for field in _ROOT_CAUSE_FIELDS):
+        print("This is now a fix, so it needs a root cause before it can be planned.")
+        for question in planning_questions({}, "fix")[: len(_ROOT_CAUSE_FIELDS)]:
+            answers[question["field"]] = ask(question["prompt"]).strip()
 
 
 def run_planning_interactive(app: App, prefilled_repository_id: str | None = None) -> int:
@@ -256,6 +272,12 @@ def run_planning_interactive(app: App, prefilled_repository_id: str | None = Non
             confirmed_work_type = work_type  # repo no longer resolvable -- skip the check, don't block planning over it
         if confirmed_work_type != work_type:
             store.save_plan_draft(initiative_id, confirmed_work_type, objective, draft["repositories"], draft["routing"], draft["questions"])
+            try:
+                _reconcile_root_cause(answers, work_type, confirmed_work_type)
+            except (EOFError, KeyboardInterrupt):
+                print("\nCancelled -- nothing was written. The draft is saved; resume anytime by running escape-ai again.")
+                return 0
+            store.save_plan_pending_answers(initiative_id, answers)
 
     local_architecture_notes_by_repo: dict[str, list[str]] = {}
     for repository_id in draft["repositories"]:

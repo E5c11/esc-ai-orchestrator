@@ -17,6 +17,26 @@ from esc_orchestrator.domain.errors import ConflictError, IncompleteError, Inval
 from esc_orchestrator.domain.intents import initiative_id_for, work_type_for
 
 
+def root_cause_from_answers(answers: dict[str, Any]) -> dict[str, Any] | None:
+    """The root cause a plan's answers carry, or None if they carry none.
+
+    Accepted in two shapes: a nested `root_cause` object (an answers file written by hand or by an AI
+    operator), or the flat `root_cause_statement` / `root_cause_evidence` / `root_cause_reproduction` fields
+    the interactive flow collects one question at a time. A blank flat field counts as not given."""
+    nested = answers.get("root_cause")
+    if nested is not None:
+        return nested
+    statement = (answers.get("root_cause_statement") or "").strip()
+    evidence = (answers.get("root_cause_evidence") or "").strip()
+    if not statement and not evidence:
+        return None
+    root_cause: dict[str, Any] = {"statement": statement, "evidence": evidence}
+    reproduction = (answers.get("root_cause_reproduction") or "").strip()
+    if reproduction:
+        root_cause["reproduction"] = reproduction
+    return root_cause
+
+
 @translates_engine_errors
 def draft_plan(store: StateStore, registry: Path, initiative_id: str, work_type: str, objective: str, repository_values: list[str]) -> dict[str, Any]:
     if work_type not in WORK_TYPES:
@@ -33,7 +53,7 @@ def draft_plan(store: StateStore, registry: Path, initiative_id: str, work_type:
             {"component_id": match.component_id, "score": match.score, "reasons": list(match.reasons)}
             for match in matches
         ]
-    questions = planning_questions(matches_by_repo)
+    questions = planning_questions(matches_by_repo, work_type)
     store.save_plan_draft(initiative_id, work_type, objective, repositories, routing, questions)
     return {
         "initiative_id": initiative_id, "work_type": work_type, "objective": objective,
@@ -77,6 +97,15 @@ def apply_plan(
     if draft is None:
         raise NotFoundError(f"no plan draft for `{initiative_id}`; draft first")
     repositories = draft["repositories"]
+    root_cause = root_cause_from_answers(answers)
+    if draft["work_type"] == "fix" and root_cause is None:
+        raise IncompleteError(
+            f"a fix needs a root cause before `{initiative_id}` can be planned",
+            hint=(
+                "answer `root_cause`: {\"statement\": \"what is actually wrong\", \"evidence\": [\"how you know\"]} "
+                "(the cause, not the symptom)"
+            ),
+        )
     components_by_repo = answers.get("components", {})
     completion_conditions = answers.get("completion_conditions", [])
     scope_boundary = answers.get("scope_boundary", "")
@@ -89,7 +118,7 @@ def apply_plan(
         written = generate_single_repository_workflow(
             repository_path, repository_id, initiative_id, draft["objective"], draft["work_type"],
             components_by_repo.get(repository_id, []), scope_boundary, completion_conditions, rollout_needs,
-            local_architecture_notes=notes_by_repo.get(repository_id),
+            local_architecture_notes=notes_by_repo.get(repository_id), root_cause=root_cause,
         )
         result = {repository_id: [str(path.relative_to(repository_path)) for path in written]}
         dependency_graph = None
@@ -118,7 +147,9 @@ def apply_plan(
             if notes_by_repo.get(repository_id):
                 task["local_architecture_notes"] = notes_by_repo[repository_id]
             tasks[repository_id] = task
-        written_paths = generate_multi_repository_workflow(registry, initiative_id, draft["objective"], draft["work_type"], tasks)
+        written_paths = generate_multi_repository_workflow(
+            registry, initiative_id, draft["objective"], draft["work_type"], tasks, root_cause=root_cause,
+        )
         result = {}
         for repository_id, paths in written_paths.items():
             _, repository_path = resolve_repository(repository_id, registry)

@@ -30,6 +30,7 @@ from esc_orchestrator.entrypoints.cli.render import (
     render_checkpoint_candidate,
     render_execution_preview,
     render_execution_result,
+    render_intent_notes,
     render_plan_draft,
     render_plan_result,
     render_procedure,
@@ -58,6 +59,10 @@ def _dispatch_intent(args: argparse.Namespace, app: App) -> int:
     print()
     print(render_procedure(verb))
     print()
+    notes = render_intent_notes(verb)
+    if notes:
+        print(notes)
+        print()
     print(f"Next: `escape-ai initiative answer {initiative_id} <answers.json>`, then `escape-ai initiative apply {initiative_id}`.")
     return EXIT_OK
 
@@ -127,7 +132,7 @@ def _dispatch_task(args: argparse.Namespace, app: App) -> int:
         result = app.execute_task(
             preview.repository_id, preview.repository_path, args.task_id, provider, opencode_server=args.opencode,
         )
-        print(render_execution_result(result))
+        print(render_execution_result(result, worktree_diff(preview.repository_path, args.task_id)))
         return EXIT_OK if result["status"] == "succeeded" else EXIT_FAILED
 
     if args.task_command == "promote-checkpoint":

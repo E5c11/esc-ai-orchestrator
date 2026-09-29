@@ -148,8 +148,9 @@ def execute_task(
     ensure_provider_configured) -- this function does not prompt or default one.
     """
     task_path = locate_task(repository_path, repository_id, task_id)
+    task_document = load_yaml(task_path)
     contracts = {
-        "task": load_yaml(task_path),
+        "task": task_document,
         "workspace": default_workspace(repository_id),
         "adapter": default_adapter(provider),
         "policy": resolve_default_policy(registry),
@@ -162,9 +163,16 @@ def execute_task(
     finally:
         scheduler.close()
     run = store.get_run(run_id)
+    summary = store.summary(run_id) or {}
     return {
         "task_id": task_id, "run_id": run_id, "attempt": attempt,
         "status": run["status"], "error": run.get("error"), "output_path": run.get("output_path"),
+        # For the final report (what was wrong, how it was validated): copied from what the run
+        # already produced, never recomputed.
+        "work_type": task_document["task"].get("work_type"),
+        "root_cause": task_document.get("root_cause"),
+        "verification": {"status": summary.get("verification", {}).get("status"), "totals": summary.get("totals")}
+        if summary else None,
     }
 
 

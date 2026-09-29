@@ -576,9 +576,14 @@ class IntentVerbTests(unittest.TestCase):
                     self.assertIn(stage.name, help_text)
 
     def test_stages_without_an_implementation_are_marked_not_yet_enforced(self):
+        refactor = cli.render_procedure("refactor")
+        self.assertRegex(refactor, r"baseline_capture.*\(not yet enforced\)")
+        self.assertNotRegex(refactor, r"verify.*not yet enforced")
+
+    def test_the_fix_procedure_no_longer_claims_root_cause_is_unenforced(self):
         fix = cli.render_procedure("fix")
-        self.assertRegex(fix, r"root_cause.*\(not yet enforced\)")
-        self.assertNotRegex(fix, r"verify.*not yet enforced")
+        self.assertRegex(fix, r"root_cause")
+        self.assertNotIn("not yet enforced", fix)
 
     def test_intent_work_types_are_real_planning_work_types(self):
         from esc_exec.planning import WORK_TYPES
@@ -1390,6 +1395,9 @@ class PlanningInteractiveTests(unittest.TestCase):
 
             responses = iter([
                 "repo", "Fix the broken login page.", "login-fix", "2",
+                "The login form trims the password twice.",  # root cause (a fix asks this first)
+                "auth.py:12; repro test fails",             # evidence
+                "",                                          # reproduction (optional)
                 "content", "No new auth providers.", "Login works again.", "",
                 "1",  # confirm apply -- no drift-check prompt in between
             ])
@@ -1427,6 +1435,9 @@ class PlanningInteractiveTests(unittest.TestCase):
             responses = iter([
                 "repo", "Fix the broken login page.", "login-fix", "2",
                 "2",  # decline "Talk through this plan with AI first?"
+                "The login form trims the password twice.",  # root cause (a fix asks this first)
+                "auth.py:12; repro test fails",             # evidence
+                "",                                          # reproduction (optional)
                 "content", "No new auth providers.", "Login works again.", "",
                 "1",  # reclassify as `feature`
                 "1",  # confirm apply
@@ -1466,6 +1477,9 @@ class PlanningInteractiveTests(unittest.TestCase):
             responses = iter([
                 "repo", "Fix the broken login page.", "login-fix", "2",
                 "2",  # decline "Talk through this plan with AI first?"
+                "The login form trims the password twice.",  # root cause (a fix asks this first)
+                "auth.py:12; repro test fails",             # evidence
+                "",                                          # reproduction (optional)
                 "content", "No new auth providers.", "Login works again.", "",
                 "2",  # keep it as `fix`
                 "1",  # confirm apply
@@ -1502,6 +1516,9 @@ class PlanningInteractiveTests(unittest.TestCase):
             responses = iter([
                 "repo", "Fix the broken login page.", "login-fix", "2",
                 "2",  # decline "Talk through this plan with AI first?"
+                "The login form trims the password twice.",  # root cause (a fix asks this first)
+                "auth.py:12; repro test fails",             # evidence
+                "",                                          # reproduction (optional)
                 "content", "No new auth providers.", "Login works again.", "",
                 "1",  # confirm apply -- no drift-check prompt in between
             ])
