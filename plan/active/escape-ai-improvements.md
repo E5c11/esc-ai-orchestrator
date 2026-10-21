@@ -34,6 +34,14 @@ itself. Where each finding landed:
   broader lesson (a fix isn't verified until exercised against the real running
   system) is a human-process discipline point, not something escape-ai's tooling
   itself can enforce.
+- **#11–#14** (new, appended 2026-08-27 — see the addendum after "Net takeaway"):
+  index staleness with no pre-dispatch check, a registry-alias/repository-id
+  mismatch only caught at dispatch time, a real correctness bug in
+  `promote-checkpoint`'s "latest checkpoint" resolution, and agent-side credential
+  workarounds silently committed to shared build config. Not yet distilled into
+  design docs — logged as-is from the `legacy-password-migration`/
+  `legacy-migration-coverage-gaps` initiatives across `ampm-contracts`/
+  `ampm-backend`/`ampm-kmp`.
 
 Running log of real friction points hit while using `escape-ai` (headless/BACKDOOR mode) to
 orchestrate the `user-identity-spring` and `referral-premium-spring` initiatives across
@@ -297,3 +305,117 @@ plan/answer/apply/run flow itself worked exactly as documented. Every issue abov
 `BACKDOOR.md` end to end. For a public release, front-loading a pre-flight/doctor pass and
 making `plan draft`'s questions and `task run`'s failures machine-inspectable would remove most
 of the friction documented here.
+
+---
+
+## Addendum (2026-08-27) — new findings from `legacy-password-migration` / `legacy-migration-coverage-gaps`
+
+Two initiatives (one single-repo in `ampm-backend`, one 3-repo chain across `ampm-contracts` →
+`ampm-backend` → `ampm-kmp`) driven through `BACKDOOR.md` headless mode. Findings below are new,
+not yet turned into design docs, numbered continuing from #10 above.
+
+### 11. Onboarded repos' indexes go stale with no pre-dispatch staleness check
+
+Both `ampm-backend` and `ampm-kmp` had been onboarded earlier in this project's life
+(`repository status` reported `has_applied_answers: True` for both), but `task run` against
+either failed immediately on the very first dispatch attempt with:
+
+```
+Error: repository indexes are missing, stale, or invalid; regenerate and validate them
+```
+
+The fix each time was `repository analyze --json` + `repository apply` to regenerate every
+`esc-index.json` under `.esc-ai/components/*/`. Nothing before `task run` actually attempting
+to dispatch a real agent surfaced this — it cost one full failed-attempt cycle per repo before I
+thought to check, and `repository status`'s own boolean flags (`has_applied_answers`) gave no
+hint that the applied answers were now stale relative to the real working tree.
+
+**Suggested fix:** same spirit as #3's pre-flight doctor — a lightweight index-freshness check
+(compare each `esc-index.json`'s tracked file hashes/mtimes against the real working tree,
+similar to what `repository analyze` already computes as `input_digest`) run automatically
+before `task run` dispatches a real agent, failing fast with "run `repository apply <repo>`
+first" instead of failing deep inside dispatch.
+
+---
+
+### 12. A task's declared `repository:` can silently diverge from the repo's own on-disk identity, caught only at dispatch time
+
+A repo was registered under alias `AMPM` (`escape-ai repository add AMPM /path/to/repo`), and
+`plan draft`/`plan apply` happily generated a `task.yaml` with `repository: AMPM`, matching that
+registered id — the whole plan/answer/apply flow reported success with no warning. But the
+repo's own on-disk manifest (`.esc-ai/esc-execution.yaml`) identifies it as `ampm-kmp` (its real
+GitHub repo name), because a second, older registry entry (`ampm-kmp`) already pointed at the
+identical path from a prior session. `task run AMPM <task-id>` failed with the index-staleness
+error from #11 first; after fixing that, it failed again with a *different*, more specific error:
+
+```
+Error: task repository does not match repository index
+```
+
+Only by hand-editing `task.yaml`'s `repository:` field from `AMPM` to `ampm-kmp` did dispatch
+succeed. The registry silently permits two aliases to point at the same path, and nothing
+cross-checks a task's declared `repository:` against the manifest's own `repository.id` until
+the literal moment of dispatch — so a plan can look completely valid through `plan draft`/
+`plan answer`/`plan apply`/`plan ready` and only fail at the very last step, for a reason with no
+connection to the actual work being planned.
+
+**Suggested fix:** either `repository add` should reject/warn loudly when registering a second
+alias for a path already registered under a different id, or `plan draft`/`plan apply` should
+validate each declared `repository:` id against that repo's on-disk manifest `repository.id` at
+plan-generation time (not defer the mismatch to `task run`).
+
+---
+
+### 13. `task promote-checkpoint` can resolve to a stale checkpoint instead of the actual latest one — real risk of misjudging completed work as blocked
+
+The riskiest finding in this addendum. After three dispatch attempts on one task — attempt 1: an
+environment crash (empty stderr, no checkpoint); attempt 2: a run that itself **succeeded**
+(real commit produced, `run.json` shows `status: succeeded`) but was reported as an overall
+`failed` attempt only because the orchestrator's own post-hoc "impact test" sweep caught a
+pre-existing, unrelated broken test elsewhere in the repo (confirmed independently: the same
+test fails identically on a clean checkout of the target branch, untouched by this task's diff)
+— running `escape-ai task promote-checkpoint <repo> <task-id>` (no `--yes`, preview only)
+printed a checkpoint from `run-57513a9c...` (blocker: `"claude-code run failed"`,
+`updated_at: 09:56:55Z` — attempt 1's crash). A strictly newer checkpoint existed on disk the
+whole time, written by attempt 2's wrapper run (`updated_at: 10:21:07Z`, 25 minutes later,
+blocker: the unrelated impact-test failure) — findable only by grepping every
+`.esc-ai/runs/*/checkpoint.yaml` for this task id and comparing `updated_at` by hand.
+
+Had I trusted the CLI's own "latest checkpoint" resolution instead of independently
+cross-referencing timestamps, I would have either promoted the wrong, uninformative checkpoint
+(losing the real signal that this was "genuinely complete work, blocked only by an unrelated
+pre-existing test"), or concluded three attempts had produced zero progress when attempt 2 had
+actually finished the task correctly.
+
+**Suggested fix:** `promote-checkpoint`'s "latest" resolution should sort strictly by
+`checkpoint.updated_at` (or the underlying run's `ended_at`) across every checkpoint recorded
+for a task id, not whatever selection logic currently applies. This reads as a real correctness
+bug, not a design tradeoff — of everything in this addendum, it's the one most likely to cause a
+human operator to silently discard or misjudge already-completed work.
+
+---
+
+### 14. An agent-side environment workaround for missing credentials can end up silently committed as a permanent change to shared build config
+
+Two separate task attempts, in two different repos (`ampm-backend` and `ampm-kmp`),
+independently hit the same root cause — no working GitHub Packages *read* credentials in the
+dispatched environment (the ambient `gh auth token` lacks `read:packages` scope; the target
+repo's own gitignored, `local.properties`-sourced PAT returned `401 Unauthorized` against a
+just-published package version) — and both worked around it identically: adding a permanent
+`mavenLocal()` entry to the repository's own shared `settings.gradle.kts`, committed with no
+comment flagging it as temporary or environment-specific. Left in, this would make every future
+build on *any* machine silently prefer whatever happens to be sitting in that machine's local
+Maven cache over the real, intended GitHub Packages artifact — a reproducibility/supply-chain
+hazard, not a cosmetic one. I only caught both instances by manually diffing each task's final
+commit against its own repo's target branch before merging; nothing in the run summary,
+checkpoint, or verification result flagged "this task modified shared dependency-resolution
+configuration" as something warranting extra scrutiny before merge.
+
+**Suggested fix:** flag, in the run summary or checkpoint, whenever a task's diff touches files
+that configure dependency resolution itself (`settings.gradle.kts`/`build.gradle.kts`
+`repositories{}` blocks, `.npmrc`, `pip.conf`, `Cargo.toml` `[source]` overrides, etc.) — these
+carry outsized blast radius (every future build on every machine, not just this one feature) and
+deserve a distinct "review before merge" signal separate from ordinary source changes.
+Complements #3/#4 above: even when a credential gap is worked around well enough for the agent
+to reach a self-reported "succeeded," the workaround artifact itself still needs surfacing to
+the human, not just the original failure.
