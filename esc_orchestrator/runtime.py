@@ -10,6 +10,7 @@ from esc_exec.baseline import baseline_blockers, plan_blockers
 from esc_exec.claude_client import ClaudeCodeClient
 from esc_exec.claude_code_adapter import ClaudeCodeAdapter
 from esc_exec.codex_adapter import CodexAdapter, CodexClient
+from esc_exec.dependencies import refresh_stale_dependency_graph
 from esc_exec.environment import check_prerequisites
 from esc_exec.grounding import (
     count_references,
@@ -106,12 +107,16 @@ class IndexRefreshError(PreDispatchBlockerError):
 
 def refresh_and_commit_stale_indexes(repository: Path, task_id: str) -> list[Path]:
     """
-    Regenerate indexes that are only stale or missing (see `esc_exec.indexing.refresh_stale_indexes`) and commit
+    Regenerate indexes and the dependency graph when they are only stale or missing (see
+    `esc_exec.indexing.refresh_stale_indexes` and `esc_exec.dependencies.refresh_stale_dependency_graph`) and commit
     exactly those files on the checked-out branch, so the task's worktree sees them. Nothing else is staged or
     committed: any other work in the checkout is left as it is. Returns the files committed (or regenerated, when
     the repository is not a git checkout). Invalid indexes are left for `build_task_context` to report.
     """
     changed = refresh_stale_indexes(repository)
+    graph = refresh_stale_dependency_graph(repository)
+    if graph is not None:
+        changed.append(graph)
     if not changed or not _is_git_checkout(repository):
         return changed
     relative = [str(path.resolve().relative_to(repository.resolve())) for path in changed]

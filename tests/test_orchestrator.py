@@ -1240,7 +1240,10 @@ class IndexRefreshTests(unittest.TestCase):
             "build": {"system": "gradle", "project": ":content"},
             "paths": {"source": "src/main", "tests": "src/test"},
         })
+        (self.repo / "settings.gradle.kts").write_text('include(":content")\n', encoding="utf-8")
+        (self.repo / "content/build.gradle.kts").write_text("", encoding="utf-8")
         generate_indexes(self.repo)
+        generate_dependency_graph(self.repo)
         self._git("init", "-q", "-b", "main")
         self._git("config", "user.email", "test@example.com")
         self._git("config", "user.name", "Test")
@@ -1268,11 +1271,24 @@ class IndexRefreshTests(unittest.TestCase):
         self.assertIn("regenerate stale repository indexes before task-1", self._git("log", "-1", "--format=%s"))
         committed = set(self._git("show", "--name-only", "--format=", "HEAD").split())
         self.assertTrue(committed)
-        self.assertTrue(all(path.endswith("esc-index.json") for path in committed))
+        self.assertTrue(all(path.endswith("esc-index.json") for path in committed), committed)
         status = self._git("status", "--porcelain")
         self.assertIn("notes.txt", status)
         self.assertIn("QuizService.kt", status)
         self.assertNotIn("esc-index.json", status)
+
+    def test_commits_a_stale_dependency_graph(self):
+        from esc_orchestrator.runtime import refresh_and_commit_stale_indexes
+
+        with (self.repo / "content/build.gradle.kts").open("a", encoding="utf-8") as output:
+            output.write("// changed\n")
+
+        changed = refresh_and_commit_stale_indexes(self.repo, "task-1")
+
+        committed = set(self._git("show", "--name-only", "--format=", "HEAD").split())
+        self.assertIn(".esc-ai/esc-dependencies.json", committed)
+        self.assertTrue(changed)
+        self.assertIn("content/build.gradle.kts", self._git("status", "--porcelain"))
 
     def test_does_nothing_when_indexes_are_valid(self):
         from esc_orchestrator.runtime import refresh_and_commit_stale_indexes
