@@ -20,6 +20,7 @@ from esc_orchestrator.application.runs import (
     prepare_task_run,
     promote_checkpoint,
     require_provider,
+    stop_task,
     task_impact,
     worktree_diff,
 )
@@ -144,6 +145,20 @@ def _dispatch_task(args: argparse.Namespace, app: App) -> int:
             return EXIT_OK
         path = promote_checkpoint(repository_path, args.task_id, candidate)
         print("Merged worktree back; no checkpoint to record." if path is None else f"Promoted checkpoint to {path}")
+        return EXIT_OK
+
+    if args.task_command == "stop":
+        _, repository_path = resolve_repository(args.repository, registry)
+        result = stop_task(store, repository_path, args.task_id, keep_worktree=args.keep_worktree)
+        if not result["stopped"]:
+            print(f"Nothing to stop for {args.task_id}: {result['reason']}.")
+            return EXIT_OK
+        print(f"Cancelled run {result['run_id']} of {args.task_id}.")
+        if result["process_note"]:
+            print(f"  processes: {result['process_note']}")
+        else:
+            print(f"  processes: stopped {len(result['signalled'])} (run process {result['pid']} and its children)")
+        print(f"  worktree: {result['worktree']}")
         return EXIT_OK
 
     if args.task_command == "impact":

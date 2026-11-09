@@ -36,6 +36,11 @@ class Store:
         CREATE TABLE IF NOT EXISTS plan_results(initiative_id TEXT PRIMARY KEY, answers TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS task_attempts(task_id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, updated_at TEXT NOT NULL);
         """)
+        # Added after the first databases existed: CREATE TABLE IF NOT EXISTS never adds a column to an old table.
+        run_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(runs)")}
+        if "pid" not in run_columns:
+            with self.connection:
+                self.connection.execute("ALTER TABLE runs ADD COLUMN pid INTEGER")
 
     def submit(self, contracts: dict[str, Any]) -> tuple[str, str]:
         """
@@ -51,7 +56,10 @@ class Store:
                 "ON CONFLICT(id) DO UPDATE SET status=excluded.status, contracts=excluded.contracts, updated_at=excluded.updated_at",
                 (task_id, "queued", json.dumps(contracts), timestamp, timestamp),
             )
-            self.connection.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?)", (run_id, task_id, "queued", None, None, timestamp, timestamp))
+            self.connection.execute(
+                "INSERT INTO runs(id,task_id,status,output_path,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                (run_id, task_id, "queued", None, None, timestamp, timestamp),
+            )
             self._event(run_id, "run.queued", {"task_id": task_id})
         return task_id, run_id
 
@@ -100,7 +108,7 @@ class Store:
                     (task_id, "queued", json.dumps(contracts), timestamp, timestamp),
                 )
                 self.connection.execute(
-                    "INSERT INTO runs VALUES(?,?,?,?,?,?,?)",
+                    "INSERT INTO runs(id,task_id,status,output_path,error,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
                     (run_id, task_id, "queued", None, None, timestamp, timestamp),
                 )
                 self._event(run_id, "run.queued", {"task_id": task_id})
@@ -112,10 +120,19 @@ class Store:
 
     def update_run(self, run_id: str, status: str, output_path: str | None = None, error: str | None = None):
         with self.lock, self.connection:
-            row = self.connection.execute("SELECT task_id FROM runs WHERE id=?", (run_id,)).fetchone()
+            row = self.connection.execute("SELECT task_id, status FROM runs WHERE id=?", (run_id,)).fetchone()
+            if row["status"] == "cancelled" and status != "cancelled":
+                # `task stop` cancelled this run; the dying worker's later "failed" must not overwrite that.
+                self._event(run_id, "run.status-ignored", {"status": status, "error": error})
+                return
             self.connection.execute("UPDATE runs SET status=?,output_path=?,error=?,updated_at=? WHERE id=?", (status, output_path, error, now(), run_id))
             self.connection.execute("UPDATE tasks SET status=?,updated_at=? WHERE id=?", (status, now(), row["task_id"]))
             self._event(run_id, f"run.{status}", {"output_path": output_path, "error": error})
+
+    def set_run_pid(self, run_id: str, pid: int) -> None:
+        """Records the process that owns this run (the `task run` CLI process), so `task stop` can stop it."""
+        with self.lock, self.connection:
+            self.connection.execute("UPDATE runs SET pid=?,updated_at=? WHERE id=?", (pid, now(), run_id))
 
     def _event(self, run_id: str, event_type: str, payload: dict[str, Any]):
         sequence = self.connection.execute("SELECT COUNT(*) FROM events WHERE run_id=?", (run_id,)).fetchone()[0]

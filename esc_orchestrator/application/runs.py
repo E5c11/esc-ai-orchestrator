@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,8 @@ from esc_exec.baseline import passed_check_count
 from esc_exec.checkpoints import checkpoint_path, create_checkpoint, update_checkpoint
 from esc_exec.read_only import effective_policy, is_read_only
 from esc_exec.registry import active_provider, read_registry
-from esc_exec.worktree import diff_summary, merge_worktree
+from esc_exec.processes import kill_process_tree, process_alive
+from esc_exec.worktree import WorktreeError, diff_summary, merge_worktree, remove_worktree
 from esc_exec.yaml_io import load_yaml
 from esc_orchestrator.application.doctor import doctor_check
 from esc_orchestrator.application.errors import translates_engine_errors
@@ -164,6 +166,9 @@ def execute_task(
     scheduler = scheduler_factory(store, runtime or runtime_factory(provider, registry, opencode_server), registry)
     try:
         _, run_id = scheduler.submit(contracts)
+        # A CLI run is one task in its own process, so that process (and its children: the agent, gate commands,
+        # Gradle) is exactly what `task stop` has to stop.
+        store.set_run_pid(run_id, os.getpid())
         scheduler.queue.join()
     finally:
         scheduler.close()
@@ -188,6 +193,46 @@ def execute_task(
         "baseline": _baseline_for(store, run_id) if work_type == "refactor" else None,
         # A document run's grounding record: what was checked (see esc_exec.grounding).
         "grounding": store.output_document(run_id, "grounding-check.json") if work_type == "document" else None,
+    }
+
+
+ACTIVE_RUN_STATUSES = ("queued", "running")
+
+
+@translates_engine_errors
+def stop_task(store: StateStore, repository_path: Path, task_id: str, keep_worktree: bool = False) -> dict[str, Any]:
+    """
+    Stops a task's active run: marks it `cancelled` first (so the dying worker cannot record it as failed), stops
+    the `task run` process that owns it together with its agent and gate processes, then removes the task's
+    worktree and branch unless `keep_worktree`. A run started before PIDs were recorded is cancelled and cleaned up,
+    but its processes must be stopped by hand.
+    """
+    run = store.get_latest_run_for_task(task_id)
+    if run is None:
+        raise NotFoundError(f"task {task_id} has no runs")
+    if run["status"] not in ACTIVE_RUN_STATUSES:
+        return {"task_id": task_id, "run_id": run["id"], "stopped": False,
+                "reason": f"the latest run is already {run['status']}"}
+    store.update_run(run["id"], "cancelled", output_path=run.get("output_path"), error="stopped with `task stop`")
+    pid = run.get("pid")
+    signalled: list[int] = []
+    process_note = None
+    if pid is None:
+        process_note = "no process was recorded for this run (started before `task stop` existed); stop it by hand"
+    elif not process_alive(pid):
+        process_note = f"process {pid} had already exited"
+    else:
+        signalled = kill_process_tree(pid)
+    worktree_note = "kept"
+    if not keep_worktree:
+        try:
+            remove_worktree(repository_path, task_id, delete_branch=True)
+            worktree_note = "removed (worktree and branch)"
+        except WorktreeError as exc:
+            worktree_note = f"could not remove: {exc}"
+    return {
+        "task_id": task_id, "run_id": run["id"], "stopped": True, "pid": pid,
+        "signalled": signalled, "process_note": process_note, "worktree": worktree_note,
     }
 
 

@@ -97,6 +97,13 @@ def build_parser() -> argparse.ArgumentParser:
     task_impact.add_argument("task_id")
     task_promote.add_argument("--yes", action="store_true", help="Actually promote; without this, preview only")
 
+    task_stop = task_commands.add_parser(
+        "stop", help="Stop a task's active run: cancel it, stop its processes, remove its worktree and branch",
+    )
+    task_stop.add_argument("repository")
+    task_stop.add_argument("task_id")
+    task_stop.add_argument("--keep-worktree", action="store_true", help="Keep the task's worktree and branch")
+
     task_doctor = task_commands.add_parser(
         "doctor", help="Check a task's architecture coverage and verification-gate prerequisites, without dispatching",
     )
