@@ -2,20 +2,25 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
+import subprocess
 import threading
 from pathlib import Path
 from typing import Any, Protocol
 
 from esc_exec.checkpoints import checkpoint_document
 from esc_exec.read_only import is_read_only
-from esc_exec.registry import resolve_route
+from esc_exec.registry import resolve_route, run_hook_command
 from esc_exec.yaml_io import load_yaml, write_yaml
 from esc_orchestrator.initiative import analyze_task_impact
 from esc_orchestrator.runtime import RunBlockedError
 from esc_orchestrator.store import Store
 
 logger = logging.getLogger(__name__)
+
+
+HOOK_TIMEOUT_SECONDS = 60
 
 
 class Runtime(Protocol):
@@ -219,7 +224,43 @@ class Scheduler:
                     logger.warning("could not record a checkpoint for failed run %s", run_id, exc_info=True)
                 self.store.update_run(run_id, "failed", output_path=output_path, error=error)
             finally:
+                self._notify_run_complete(task_id, run_id)
                 self.queue.task_done()
+
+    def _notify_run_complete(self, task_id: str, run_id: str) -> None:
+        """
+        Runs the machine-local `hooks.on_run_complete` command (system.yaml) once the run's final status is
+        recorded, with the run described in ESC_* environment variables, so a person (or another machine) can
+        hear that a run finished without polling. Best-effort like `_advance`: a missing, failing or slow hook is
+        logged and never changes the run's recorded outcome.
+        """
+        try:
+            if self.registry is None:
+                return
+            command = run_hook_command(Path(self.registry), "on_run_complete")
+            if not command:
+                return
+            run = self.store.get_run(run_id) or {}
+            task = self.store.contracts(task_id)["task"]["task"]
+            env = {
+                **os.environ,
+                "ESC_RUN_ID": run_id,
+                "ESC_TASK_ID": task_id,
+                "ESC_REPOSITORY": str(task.get("repository", "")),
+                "ESC_RUN_STATUS": str(run.get("status", "")),
+                "ESC_RUN_OUTPUT": str(run.get("output_path") or ""),
+                "ESC_RUN_ERROR": str(run.get("error") or ""),
+            }
+            result = subprocess.run(
+                command, env=env, capture_output=True, text=True, timeout=HOOK_TIMEOUT_SECONDS, check=False
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "on_run_complete hook exited %s for run %s: %s",
+                    result.returncode, run_id, (result.stderr or result.stdout).strip()[:500],
+                )
+        except Exception:  # noqa: BLE001 -- a notification must never affect the run
+            logger.warning("on_run_complete hook failed for run %s", run_id, exc_info=True)
 
     def _work_type(self, task_id: str) -> str | None:
         return self.store.contracts(task_id)["task"]["task"].get("work_type")

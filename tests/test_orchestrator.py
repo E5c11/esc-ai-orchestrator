@@ -1309,3 +1309,86 @@ class IndexRefreshTests(unittest.TestCase):
         with self.assertRaises(IndexRefreshError) as raised:
             refresh_and_commit_stale_indexes(self.repo, "task-1")
         self.assertIn("could not commit", raised.exception.blockers[0])
+
+
+class RunCompleteHookTests(unittest.TestCase):
+    """hooks.on_run_complete in system.yaml runs once a run's final status is recorded."""
+
+    def _scheduler(self, root: Path, runtime, hook: list[str] | None):
+        store = Store(root / "db.sqlite")
+        registry = root / "registry.yaml"
+        repository_dir = root / "repo-checkout"
+        repository_dir.mkdir()
+        add_route(registry, "repositories", "repo", repository_dir)
+        if hook is not None:
+            data = load_yaml(registry)
+            data["hooks"] = {"on_run_complete": hook}
+            write_yaml(registry, data)
+        return store, Scheduler(store, runtime, registry)
+
+    def _env_dump_hook(self, root: Path) -> tuple[list[str], Path]:
+        out = root / "hook-env.json"
+        script = (
+            "import json, os, sys; "
+            "json.dump({k: v for k, v in os.environ.items() if k.startswith('ESC_')}, open(sys.argv[1], 'w'))"
+        )
+        return [sys.executable, "-c", script, str(out)], out
+
+    def test_hook_receives_the_final_status_of_a_succeeded_run(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            hook, out = self._env_dump_hook(root)
+            store, scheduler = self._scheduler(root, FakeRuntime(root / "runs"), hook)
+            task_id, run_id = scheduler.submit(contracts())
+            scheduler.queue.join()
+            scheduler.close()
+            env = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(run_id, env["ESC_RUN_ID"])
+            self.assertEqual(task_id, env["ESC_TASK_ID"])
+            self.assertEqual("succeeded", env["ESC_RUN_STATUS"])
+            self.assertEqual("repo", env["ESC_REPOSITORY"])
+            self.assertTrue(env["ESC_RUN_OUTPUT"])
+
+    def test_hook_receives_a_failed_run_with_its_error(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            hook, out = self._env_dump_hook(root)
+            store, scheduler = self._scheduler(root, FailingRuntime(), hook)
+            _, run_id = scheduler.submit(contracts())
+            scheduler.queue.join()
+            scheduler.close()
+            env = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual("failed", env["ESC_RUN_STATUS"])
+            self.assertTrue(env["ESC_RUN_ERROR"])
+            self.assertEqual("failed", store.get_run(run_id)["status"])
+
+    def test_a_failing_hook_never_changes_the_run_outcome(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store, scheduler = self._scheduler(
+                root, FakeRuntime(root / "runs"), [sys.executable, "-c", "import sys; sys.exit(3)"]
+            )
+            _, run_id = scheduler.submit(contracts())
+            scheduler.queue.join()
+            scheduler.close()
+            self.assertEqual("succeeded", store.get_run(run_id)["status"])
+
+    def test_a_missing_hook_program_never_changes_the_run_outcome(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store, scheduler = self._scheduler(root, FakeRuntime(root / "runs"), ["/no/such/esc-hook"])
+            _, run_id = scheduler.submit(contracts())
+            scheduler.queue.join()
+            scheduler.close()
+            self.assertEqual("succeeded", store.get_run(run_id)["status"])
+
+    def test_no_hook_configured_runs_nothing(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store, scheduler = self._scheduler(root, FakeRuntime(root / "runs"), None)
+            with patch("esc_orchestrator.scheduler.subprocess.run") as run:
+                _, run_id = scheduler.submit(contracts())
+                scheduler.queue.join()
+            scheduler.close()
+            run.assert_not_called()
+            self.assertEqual("succeeded", store.get_run(run_id)["status"])
