@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import uuid
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,6 +17,7 @@ from esc_exec.grounding import (
     is_documentation,
     non_documentation_changes,
 )
+from esc_exec.indexing import refresh_stale_indexes
 from esc_exec.json_io import write_json
 from esc_exec.opencode_adapter import OpenCodeAdapter, OpenCodeClient
 from esc_exec.read_only import changed_paths, effective_policy, is_read_only, state_violations
@@ -94,6 +96,43 @@ class EnvironmentPrerequisiteError(PreDispatchBlockerError):
     """
 
 
+class IndexRefreshError(PreDispatchBlockerError):
+    """
+    Raised when stale repository indexes were regenerated but could not be committed. The run's worktree branches
+    from the live checkout's HEAD, so uncommitted indexes would pass the pre-dispatch check while the agent still
+    read the stale ones; blocking is safer than running on a different picture of the repository.
+    """
+
+
+def refresh_and_commit_stale_indexes(repository: Path, task_id: str) -> list[Path]:
+    """
+    Regenerate indexes that are only stale or missing (see `esc_exec.indexing.refresh_stale_indexes`) and commit
+    exactly those files on the checked-out branch, so the task's worktree sees them. Nothing else is staged or
+    committed: any other work in the checkout is left as it is. Returns the files committed (or regenerated, when
+    the repository is not a git checkout). Invalid indexes are left for `build_task_context` to report.
+    """
+    changed = refresh_stale_indexes(repository)
+    if not changed or not _is_git_checkout(repository):
+        return changed
+    relative = [str(path.resolve().relative_to(repository.resolve())) for path in changed]
+    message = f"chore(esc-ai): regenerate stale repository indexes before {task_id}"
+    for command in (["git", "add", "--", *relative], ["git", "commit", "--quiet", "-m", message, "--", *relative]):
+        result = subprocess.run(command, cwd=repository, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            raise IndexRefreshError([
+                f"regenerated stale indexes ({', '.join(relative)}) but could not commit them: {detail}"
+            ])
+    return changed
+
+
+def _is_git_checkout(repository: Path) -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"], cwd=repository, capture_output=True, text=True, check=False
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
 class _AdapterRuntime:
     """
     Shared `Runtime.execute(contracts) -> Path` glue: write the in-memory portable
@@ -129,6 +168,9 @@ class _AdapterRuntime:
             # second cheap, local-file-only call here is accepted so the gate can
             # run strictly before dispatch, not after inspecting the adapter's
             # internal state.
+            # Indexes go stale whenever a merged change adds or removes source files; regenerate and commit
+            # them here rather than failing the run (see plan/active/escape-ai-improvements.md #11).
+            refresh_and_commit_stale_indexes(repository, contracts["task"]["task"]["id"])
             context = build_task_context(
                 repository, paths["task"], root / "task-context.json", registry_path=self.registry
             )

@@ -336,6 +336,17 @@ similar to what `repository analyze` already computes as `input_digest`) run aut
 before `task run` dispatches a real agent, failing fast with "run `repository apply <repo>`
 first" instead of failing deep inside dispatch.
 
+**Done (2026-11-09):** went further than the suggestion. `_AdapterRuntime.execute` now calls
+`refresh_and_commit_stale_indexes` before `build_task_context`. It regenerates indexes that are
+only STALE or INCOMPLETE (`esc_exec.indexing.refresh_stale_indexes`, which writes only the
+`esc-index.json` files and never touches manifests or their comments), then commits exactly those
+files on the checked-out branch so the task's worktree (branched from HEAD) sees them. INVALID
+indexes are still reported by `build_task_context`. If the commit fails, the run is blocked with an
+`IndexRefreshError` rather than run on indexes the worktree would not have. Cause of the frequent
+staleness: the digest covers the source file inventory, so any merged task that adds or removes a
+file makes the index stale. Note: the commit lands on the live checkout's branch, so a clone that
+is later updated with `git pull --ff-only` may need `--rebase` instead.
+
 ---
 
 ### 12. A task's declared `repository:` can silently diverge from the repo's own on-disk identity, caught only at dispatch time

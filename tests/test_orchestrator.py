@@ -1218,3 +1218,78 @@ class OrchestratorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IndexRefreshTests(unittest.TestCase):
+    """Stale indexes are regenerated and committed before dispatch (plan/active/escape-ai-improvements.md #11)."""
+
+    def setUp(self):
+        self.temp = TemporaryDirectory()
+        self.repo = Path(self.temp.name) / "repo"
+        source = self.repo / "content/src/main/kotlin/com/example/content"
+        source.mkdir(parents=True)
+        (source / "LessonService.kt").write_text("", encoding="utf-8")
+        write_yaml(repository_manifest_path(self.repo), {
+            "schema_version": 1,
+            "repository": {"id": "repo", "type": "gradle-multi-project", "purpose": "test"},
+            "components": [{"id": "content", "manifest": component_manifest_relative_path("content")}],
+        })
+        write_yaml(component_manifest_path(self.repo, "content"), {
+            "schema_version": 1,
+            "component": {"id": "content", "type": "gradle-module", "path": "content", "purpose": "Owns content"},
+            "build": {"system": "gradle", "project": ":content"},
+            "paths": {"source": "src/main", "tests": "src/test"},
+        })
+        generate_indexes(self.repo)
+        self._git("init", "-q", "-b", "main")
+        self._git("config", "user.email", "test@example.com")
+        self._git("config", "user.name", "Test")
+        self._git("add", "-A")
+        self._git("commit", "-q", "-m", "initial")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _git(self, *args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=self.repo, capture_output=True, text=True, check=True
+        ).stdout
+
+    def test_commits_only_regenerated_indexes_when_stale(self):
+        from esc_orchestrator.runtime import refresh_and_commit_stale_indexes
+
+        source = self.repo / "content/src/main/kotlin/com/example/content"
+        (source / "QuizService.kt").write_text("", encoding="utf-8")
+        (self.repo / "notes.txt").write_text("unrelated work in progress", encoding="utf-8")
+
+        changed = refresh_and_commit_stale_indexes(self.repo, "task-1")
+
+        self.assertTrue(changed)
+        self.assertIn("regenerate stale repository indexes before task-1", self._git("log", "-1", "--format=%s"))
+        committed = set(self._git("show", "--name-only", "--format=", "HEAD").split())
+        self.assertTrue(committed)
+        self.assertTrue(all(path.endswith("esc-index.json") for path in committed))
+        status = self._git("status", "--porcelain")
+        self.assertIn("notes.txt", status)
+        self.assertIn("QuizService.kt", status)
+        self.assertNotIn("esc-index.json", status)
+
+    def test_does_nothing_when_indexes_are_valid(self):
+        from esc_orchestrator.runtime import refresh_and_commit_stale_indexes
+
+        head = self._git("rev-parse", "HEAD")
+        self.assertEqual([], refresh_and_commit_stale_indexes(self.repo, "task-1"))
+        self.assertEqual(head, self._git("rev-parse", "HEAD"))
+
+    def test_blocks_when_the_commit_fails(self):
+        from esc_orchestrator.runtime import IndexRefreshError, refresh_and_commit_stale_indexes
+
+        source = self.repo / "content/src/main/kotlin/com/example/content"
+        (source / "QuizService.kt").write_text("", encoding="utf-8")
+        hook = self.repo / ".git/hooks/pre-commit"
+        hook.write_text("#!/bin/sh\necho refused >&2\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+
+        with self.assertRaises(IndexRefreshError) as raised:
+            refresh_and_commit_stale_indexes(self.repo, "task-1")
+        self.assertIn("could not commit", raised.exception.blockers[0])
